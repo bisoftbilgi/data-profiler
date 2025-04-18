@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from decimal import Decimal
 from database.utils import decimal_to_float
 
 
@@ -124,13 +125,13 @@ def col_analysis(conn, schema, table, column, data_type):
                 df = pd.DataFrame(data, columns=[column])
                 viz_tab1, viz_tab2 = st.tabs(["📊 Histogram", "📦 Box Plot"])
                 with viz_tab1:
-                    fig = px.histogram(df, x=column, nbins=5, title=f"Distribution of {column}")
+                    fig = px.histogram(df, x=column, nbins=10, title=f"Distribution of {column}")
                     st.plotly_chart(fig, use_container_width=True)
                 with viz_tab2:
                     fig = px.box(df, y=column, points="all", title=f"Value Distribution of {column}")
                     st.plotly_chart(fig, use_container_width=True)
                 st.write("### Value Composition")
-                st.dataframe(df[column].value_counts().reset_index().head(5))
+                st.dataframe(df[column].value_counts().reset_index().head(10))
         else:
             cursor.execute(f"""
                 SELECT "{column}", COUNT(*) as count 

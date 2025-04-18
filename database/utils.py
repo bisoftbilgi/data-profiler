@@ -1,4 +1,5 @@
 import configparser
+from decimal import Decimal
 
 
 def load_db_config(filename="profile.cfg", section="database"):

@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 from decimal import Decimal
-from main import load_db_config, decimal_to_float
+from Home_Page import load_db_config, decimal_to_float
 
 
 def get_table_summary(conn, schema):

@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal
 
 import configparser
 import streamlit as st
@@ -12,7 +13,7 @@ config = configparser.ConfigParser()
 
 # Check if config exists
 if os.path.exists(config_path):
-    st.success("✅ `profile.cfg` exists — you can edit it below.")
+    st.success("✅ Config file exists — you can edit it below.")
     config.read(config_path)
     db_config = config["database"]
 
@@ -25,7 +26,7 @@ if os.path.exists(config_path):
     schema = st.text_input("Schema", db_config.get("schema", ""))
     # Load and edit config (your logic here)
 else:
-    st.warning("⚠️ `profile.cfg` not found. Please create one.")
+    st.warning("⚠️ Config file not found. Please create one.")
     db_type = st.selectbox("Database Type", ["postgres", "mysql", "mssql", "oracle"])
     host = st.text_input("Host")
     port = st.text_input("Port")

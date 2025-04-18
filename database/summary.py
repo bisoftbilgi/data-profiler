@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import plotly.express as px
-from decimal import Decimal
+
 
 
 
@@ -75,6 +75,16 @@ def show_all_tables_summary(conn, schema):
 
         # Show main summary table
         st.subheader("📋 All Tables Overview")
+        # Calculate summary metrics
+        total_size = summary_df["Size"].sum()
+        total_rows = summary_df["Rows"].sum()
+        avg_columns = summary_df["Columns"].mean()
+
+        # Display metrics
+        metric1, metric2, metric3 = st.columns(3)
+        metric1.metric("Total Tables", len(summary_df))
+        metric2.metric("Total Rows", f"{total_rows:,}")
+        metric3.metric("Average Columns/Table", round(avg_columns, 1))
         st.dataframe(summary_df.style.format({
             "Rows": "{:,}",
             "Numeric Columns": "{:,}"
@@ -101,20 +111,8 @@ def show_all_tables_summary(conn, schema):
         with st.expander("📊 Detailed Database Metrics"):
             st.subheader("Database Statistics")
 
-            # Calculate summary metrics
-            total_size = summary_df["Size"].sum()
-            total_rows = summary_df["Rows"].sum()
-            avg_columns = summary_df["Columns"].mean()
 
-            # Display metrics
-            metric1, metric2, metric3 = st.columns(3)
-            metric1.metric("Total Tables", len(summary_df))
-            metric2.metric("Total Rows", f"{total_rows:,}")
-            metric3.metric("Average Columns/Table", round(avg_columns, 1))
 
-            # Show raw data
-            st.write("Raw summary data:")
-            st.dataframe(summary_df)
 
 
 # Main execution
