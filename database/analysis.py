@@ -24,7 +24,16 @@ def analyze_table(conn, schema, table, object_type):
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            SELECT column_name, data_type
+            SELECT 
+                column_name, 
+                data_type,
+                character_maximum_length,
+                numeric_precision,
+                numeric_scale,
+                is_nullable,
+                udt_name,
+                character_set_name,
+                collation_name
             FROM information_schema.columns 
             WHERE table_schema = %s AND table_name = %s
             ORDER BY ordinal_position
@@ -51,15 +60,34 @@ def analyze_table(conn, schema, table, object_type):
                 col1.metric("Total Rows", row_count)
                 col2.metric("Columns", len(columns_info))
         st.write("---")
-        for column, data_type in columns_info:
-            col_analysis(conn, schema, table, column, data_type)
+        for col_info in columns_info:
+            col_analysis(conn, schema, table, col_info)
             st.write("---")
     finally:
         cursor.close()
 
-def col_analysis(conn, schema, table, column, data_type):
+def col_analysis(conn, schema, table, col_info):
     cursor = conn.cursor()
-    st.subheader(f"Column: {column} ({data_type})")
+    column = col_info[0]
+    data_type = col_info[1]
+    
+    # Format data type with restrictions
+    formatted_data_type = data_type
+    if col_info[2] is not None:  # character_maximum_length
+        formatted_data_type = f"{data_type}({col_info[2]})"
+    elif col_info[3] is not None:  # numeric_precision
+        if col_info[4] is not None:  # numeric_scale
+            formatted_data_type = f"{data_type}({col_info[3]},{col_info[4]})"
+        else:
+            formatted_data_type = f"{data_type}({col_info[3]})"
+    
+    # Add character set and collation if available
+    if col_info[7] is not None:  # character_set_name
+        formatted_data_type += f" CHARACTER SET {col_info[7]}"
+    if col_info[8] is not None:  # collation_name
+        formatted_data_type += f" COLLATE {col_info[8]}"
+    
+    st.subheader(f"Column: {column} ({formatted_data_type})")
     tab1, tab2 = st.tabs(["📈 Statistics", "🔍 Data Distribution"])
 
     with tab1:
