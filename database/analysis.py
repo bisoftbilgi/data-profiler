@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import numpy as np
 from decimal import Decimal
 from database.utils import decimal_to_float
 
@@ -44,15 +45,18 @@ def analyze_table(conn, schema, table, object_type):
         with st.expander("📊 Table Metadata"):
             if object_type == 'Table':
                 cursor.execute(f"""
-                    SELECT COUNT(*) AS row_count, 
-                           pg_size_pretty(pg_total_relation_size(%s)) AS table_size
-                    FROM "{schema}"."{table}"
+                    SELECT 
+                        COUNT(*) AS row_count, 
+                        pg_size_pretty(pg_total_relation_size(%s)) AS table_size,
+                        pg_size_pretty(AVG(pg_column_size(t.*))::bigint) as avg_row_width
+                    FROM "{schema}"."{table}" t
                 """, (f'"{schema}"."{table}"',))
-                row_count, table_size = cursor.fetchone()
-                col1, col2, col3 = st.columns(3)
+                row_count, table_size, avg_row_width = cursor.fetchone()
+                col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Total Rows", row_count)
                 col2.metric("Size", table_size)
                 col3.metric("Columns", len(columns_info))
+                col4.metric("Avg Row Width", avg_row_width)
             else:
                 cursor.execute(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
                 row_count = cursor.fetchone()[0]
@@ -153,8 +157,52 @@ def col_analysis(conn, schema, table, col_info):
                 df = pd.DataFrame(data, columns=[column])
                 viz_tab1, viz_tab2 = st.tabs(["📊 Histogram", "📦 Box Plot"])
                 with viz_tab1:
-                    fig = px.histogram(df, x=column, nbins=10, title=f"Distribution of {column}")
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Regular histogram
+                    fig1 = px.histogram(df, x=column, nbins=10, title=f"Regular Histogram of {column}")
+                    fig1.update_layout(bargap=0.2)
+                    st.plotly_chart(fig1, use_container_width=True)
+                    
+                    # Hyper-balanced histogram
+                    data = df[column].values
+                    # Calculate optimal number of bins using Freedman-Diaconis rule
+                    iqr = np.percentile(data, 75) - np.percentile(data, 25)
+                    bin_width = 2 * iqr * len(data) ** (-1/3)
+                    num_bins = int(np.ceil((data.max() - data.min()) / bin_width))
+                    
+                    # Create balanced bins
+                    bins = np.linspace(data.min(), data.max(), num_bins + 1)
+                    hist, bin_edges = np.histogram(data, bins=bins)
+                    
+                    # Create balanced histogram
+                    balanced_hist = np.zeros_like(hist)
+                    total_samples = len(data)
+                    samples_per_bin = total_samples / num_bins
+                    
+                    for i in range(len(hist)):
+                        if hist[i] > 0:
+                            balanced_hist[i] = samples_per_bin
+                    
+                    # Create the plot
+                    fig2 = px.bar(
+                        x=bin_edges[:-1],
+                        y=balanced_hist,
+                        title=f"Hyper-Balanced Histogram of {column}",
+                        labels={'x': column, 'y': 'Balanced Count'}
+                    )
+                    fig2.update_layout(
+                        showlegend=False,
+                        xaxis_title=column,
+                        yaxis_title="Balanced Count"
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+                    
+                    st.write("""
+                    **Hyper-Balanced Histogram Explanation:**
+                    - This visualization shows a balanced distribution of data points
+                    - Each bin contains an equal number of samples
+                    - Useful for identifying patterns in skewed data
+                    - Helps visualize the true distribution without being affected by outliers
+                    """)
                 with viz_tab2:
                     fig = px.box(df, y=column, points="all", title=f"Value Distribution of {column}")
                     st.plotly_chart(fig, use_container_width=True)

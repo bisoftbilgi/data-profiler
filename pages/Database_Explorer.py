@@ -2,6 +2,7 @@ import streamlit as st
 from database.analysis import get_all_tables_and_views
 from database.summary import show_all_tables_summary
 from database.utils import load_db_config
+from database.quality import show_quality_tests_page
 from decimal import Decimal
 import pandas as pd
 import io
@@ -34,9 +35,7 @@ def generate_detailed_statistics(conn, schema):
                 numeric_precision,
                 numeric_scale,
                 is_nullable,
-                udt_name,
-                character_set_name,
-                collation_name
+                udt_name
             FROM information_schema.columns
             WHERE table_schema = '{schema}'
             AND table_name = '{table_name}'
@@ -92,17 +91,15 @@ def generate_detailed_statistics(conn, schema):
                     'Column Name': col_name,
                     'Data Type': formatted_data_type,
                     'Base Type': data_type,
+                    'Max Length': col[2],
+                    'Numeric Precision': col[3],
                     'Row Count': row_count,
                     'Distinct Values': distinct_count,
                     'Null Count': null_count,
                     'Null Percentage': round(null_percentage, 2),
-                    'Max Length': col[2],
-                    'Numeric Precision': col[3],
                     'Numeric Scale': col[4],
                     'Is Nullable': col[5],
-                    'UDT Name': col[6],
-                    'Character Set': col[7],
-                    'Collation': col[8]
+                    'UDT Name': col[6]
                 })
             except Exception as e:
                 # If there's an error with a specific column, log it and continue
@@ -157,8 +154,8 @@ def main():
             return
 
         # Sidebar: Add an option to switch between Table Analysis and Summary
-        st.sidebar.header("Database Objects")
-        app_mode = st.sidebar.radio("Choose Mode", ["Table Analysis", "Summary Statistics", "Detailed Statistics"])
+        st.sidebar.header("Tables / Views")
+        app_mode = st.sidebar.radio("Choose Mode", ["Table Analysis", "Summary Statistics", "Detailed Statistics", "Quality Tests"])
 
         if app_mode == "Summary Statistics":
             show_all_tables_summary(conn, schema)
@@ -184,6 +181,8 @@ def main():
                         file_name=f"database_statistics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
+        elif app_mode == "Quality Tests":
+            show_quality_tests_page(conn, schema)
         else:  # Table Analysis
             selected = st.sidebar.selectbox(
                 "Select table/view:",
