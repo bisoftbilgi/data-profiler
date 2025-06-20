@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 📊 DataProfiler
 
 A Streamlit web app to explore and analyze database schemas — supports PostgreSQL, MySQL, MSSQL, and Oracle.  
@@ -82,3 +83,7 @@ In Summary Statistics, get a brief overview of the entire schema, including row 
 
 
 
+=======
+# data-profiler
+Data Profiler
+>>>>>>> 65282dd888f4c58eaad69c58b9fc40d4cdfa53b9
