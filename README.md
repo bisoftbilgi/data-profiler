@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # 📊 DataProfiler
 
 A Streamlit web app to explore and analyze database schemas — supports PostgreSQL, MySQL, MSSQL, and Oracle.  
