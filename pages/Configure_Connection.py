@@ -4,6 +4,7 @@ from decimal import Decimal
 import configparser
 import streamlit as st
 
+<<<<<<< HEAD
 def test_connection(db_type, host, port, dbname, user, password):
     try:
         if db_type == "postgres":
@@ -48,6 +49,8 @@ def test_connection(db_type, host, port, dbname, user, password):
         return True, "Connection successful!"
     except Exception as e:
         return False, f"Connection failed: {str(e)}"
+=======
+>>>>>>> 0eb268a0608e7d53dccb44eb4326c005e3f13709
 
 # Example config fields
 st.title("Configure Connection Profile")
@@ -55,14 +58,18 @@ st.title("Configure Connection Profile")
 config_path = "profile.cfg"
 config = configparser.ConfigParser()
 
+<<<<<<< HEAD
 db_type_options = ["postgres", "mysql", "mssql", "oracle"]
 
+=======
+>>>>>>> 0eb268a0608e7d53dccb44eb4326c005e3f13709
 # Check if config exists
 if os.path.exists(config_path):
     st.success("✅ Config file exists — you can edit it below.")
     config.read(config_path)
     db_config = config["database"]
 
+<<<<<<< HEAD
     db_type_value = db_config.get("type", "")
     if db_type_value in db_type_options:
         db_type_index = db_type_options.index(db_type_value)
@@ -74,12 +81,16 @@ if os.path.exists(config_path):
         index=db_type_index if db_type_index >= 0 else 0,
         key="db_type_select"
     )
+=======
+    db_type = st.selectbox("Database Type", ["postgres", "mysql", "mssql", "oracle"])
+>>>>>>> 0eb268a0608e7d53dccb44eb4326c005e3f13709
     host = st.text_input("Host", db_config.get("host", ""))
     port = st.text_input("Port", db_config.get("port", ""))
     dbname = st.text_input("Database Name", db_config.get("dbname", ""))
     user = st.text_input("Username", db_config.get("user", ""))
     password = st.text_input("Password", db_config.get("password", ""), type="password")
     schema = st.text_input("Schema", db_config.get("schema", ""))
+<<<<<<< HEAD
 else:
     st.warning("⚠️ Config file not found. Please create one.")
     db_type = st.selectbox(
@@ -88,6 +99,12 @@ else:
         index=0,
         key="db_type_select"
     )
+=======
+    # Load and edit config (your logic here)
+else:
+    st.warning("⚠️ Config file not found. Please create one.")
+    db_type = st.selectbox("Database Type", ["postgres", "mysql", "mssql", "oracle"])
+>>>>>>> 0eb268a0608e7d53dccb44eb4326c005e3f13709
     host = st.text_input("Host")
     port = st.text_input("Port")
     dbname = st.text_input("Database Name")
@@ -116,6 +133,7 @@ with st.form("save_config_form"):
 
         st.success("✅ Configuration saved successfully!")
 
+<<<<<<< HEAD
 # Test Connection Button
 if st.button("🔍 Test Connection"):
     if not all([host, port, dbname, user, password]):
@@ -127,3 +145,6 @@ if st.button("🔍 Test Connection"):
                 st.success(message)
             else:
                 st.error(message)
+=======
+        # Optionally, test the connection here...
+>>>>>>> 0eb268a0608e7d53dccb44eb4326c005e3f13709

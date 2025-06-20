@@ -2,23 +2,7 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 from decimal import Decimal
-import plotly.express as px
-from database.utils import load_db_config, decimal_to_float
-<<<<<<< HEAD
-import io
-from datetime import datetime
-=======
->>>>>>> 0eb268a0608e7d53dccb44eb4326c005e3f13709
-
-
-def get_table_row_width(conn, schema, table):
-    """Calculate the average row width for a table"""
-    with conn.cursor() as cursor:
-        cursor.execute(f"""
-            SELECT pg_size_pretty(AVG(pg_column_size(t.*))::bigint) as avg_row_width
-            FROM "{schema}"."{table}" t
-        """)
-        return cursor.fetchone()[0]
+from Home_Page import load_db_config, decimal_to_float
 
 
 def get_table_summary(conn, schema):
@@ -56,98 +40,24 @@ def get_table_summary(conn, schema):
             """, (schema, table))
             numeric_columns = cursor.fetchone()[0]
 
-            # Get average row width
-            avg_row_width = get_table_row_width(conn, schema, table)
-
             summary_data.append({
                 "Table": table,
                 "Rows": row_count,
                 "Size": table_size,
                 "Columns": column_count,
-                "Numeric Columns": numeric_columns,
-                "Avg Row Width": avg_row_width
+                "Numeric Columns": numeric_columns
             })
 
     return pd.DataFrame(summary_data)
 
 
-<<<<<<< HEAD
-def show_all_tables_summary(connector, schema):
-    """Show summary statistics for all tables in the database"""
-    try:
-        # Get all tables
-        tables = connector.get_all_tables_and_views(schema)
-        
-        # Create a list to store table statistics
-        table_stats = []
-        
-        # Get statistics for each table
-        for table in tables:
-            table_name = table[0]
-            table_type = table[1]
-            
-            # Get table analysis
-            analysis = connector.get_table_analysis(schema, table_name)
-            
-            if analysis:
-                table_stats.append({
-                    'Table Name': table_name,
-                    'Type': table_type,
-                    'Row Count': analysis['row_count'],
-                    'Total Size (MB)': analysis['total_size'],
-                    'Table Size (MB)': analysis['table_size'],
-                    'Index Size (MB)': analysis['index_size'],
-                    'Avg Row Width (bytes)': analysis['avg_row_width'],
-                    'Last Analyzed': analysis['last_analyzed'] if analysis['last_analyzed'] else 'Never'
-                })
-        
-        # Convert to DataFrame
-        if table_stats:
-            df = pd.DataFrame(table_stats)
-            
-            # Display summary
-            st.header("Database Summary")
-            
-            # Overall statistics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Tables", len(df))
-                st.metric("Total Rows", df['Row Count'].sum())
-            with col2:
-                st.metric("Total Size", f"{df['Total Size (MB)'].sum():.2f} MB")
-                st.metric("Average Table Size", f"{df['Table Size (MB)'].mean():.2f} MB")
-            with col3:
-                st.metric("Average Row Count", f"{df['Row Count'].mean():.0f}")
-                st.metric("Average Row Width", f"{df['Avg Row Width (bytes)'].mean():.0f} bytes")
-            
-            # Table statistics
-            st.subheader("Table Statistics")
-            st.dataframe(df)
-            
-            # Create Excel file
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Table Statistics', index=False)
-            
-            # Add download button
-            st.download_button(
-                label="Download Excel Report",
-                data=buffer.getvalue(),
-                file_name=f"table_statistics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        else:
-            st.warning("No tables found in the database.")
-            
-    except Exception as e:
-        st.error(f"Error getting table summary: {str(e)}")
-=======
 def show_all_tables_summary(conn, schema):
     st.title("Database Summary Report")
 
     with st.spinner("Generating database summary..."):
         # Get summary data
         summary_df = get_table_summary(conn, schema)
+        st.write("Debug: Summary DF bos degil", summary_df)
 
         # Show main summary table
         st.subheader("📋 All Tables Overview")
@@ -165,14 +75,14 @@ def show_all_tables_summary(conn, schema):
             top_5 = sorted_df.head(5)
             other_rows = sorted_df.iloc[5:]["Rows"].sum()
             other_size = sorted_df.iloc[5:]["Size"].iloc[0]  # Take first size as representative
-
+            
             # Create new dataframe for visualization
             viz_df = pd.DataFrame({
                 "Table": list(top_5["Table"]) + ["Diğer"],
                 "Rows": list(top_5["Rows"]) + [other_rows],
                 "Size": list(top_5["Size"]) + [other_size]
             })
-
+            
             fig = px.bar(viz_df,
                          x="Table", y="Rows",
                          color="Size",
@@ -185,14 +95,14 @@ def show_all_tables_summary(conn, schema):
             sorted_df = summary_df.sort_values("Numeric Columns", ascending=False)
             top_5 = sorted_df.head(5)
             other_columns = sorted_df.iloc[5:]["Numeric Columns"].sum()
-
+            
             # Create new dataframe for visualization
             viz_df = pd.DataFrame({
                 "Table": list(top_5["Table"]) + ["Diğer"],
                 "Numeric Columns": list(top_5["Numeric Columns"]) + [other_columns]
             })
-
-            fig = px.pie(viz_df,
+            
+            fig = px.pie(viz_df, 
                          names="Table",
                          values="Numeric Columns",
                          title="Numeric Columns per Table - Top 5 + Diğer")
@@ -249,7 +159,6 @@ def show_all_tables_summary(conn, schema):
             # Show raw data
             st.write("Raw summary data:")
             st.dataframe(summary_df)
->>>>>>> 0eb268a0608e7d53dccb44eb4326c005e3f13709
 
 
 # Main execution
