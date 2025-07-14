@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import psycopg2
 import pyodbc
 import mysql.connector
+import oracledb
 import pandas as pd
 
 class DatabaseConnector(ABC):
@@ -51,6 +52,26 @@ class DatabaseConnector(ABC):
         """Return a dict mapping column names to (referenced_table, referenced_column)"""
         pass
 
+    @abstractmethod
+    def get_null_count(self, schema, table, column):
+        """Get count of null values in a column"""
+        pass
+
+    @abstractmethod
+    def get_distinct_count(self, schema, table, column):
+        """Get count of distinct values in a column"""
+        pass
+
+    @abstractmethod
+    def get_min_max_range(self, schema, table, column):
+        pass
+
+    @abstractmethod
+    def get_allowed_values_violation_count(self, schema, table, column, allowed_values):
+        """Get count of values that are not in the allowed values list"""
+        pass
+
+
 class PostgresConnector(DatabaseConnector):
     """PostgreSQL database connector"""
     
@@ -63,11 +84,19 @@ class PostgresConnector(DatabaseConnector):
             raise Exception(f"Error connecting to PostgreSQL: {str(e)}")
     
     def close(self):
-        """Close PostgreSQL connection"""
-        if self.cursor:
-            self.cursor.close()
-        if self.connection:
-            self.connection.close()
+        """Close PostgreSQL connection safely"""
+        try:
+            if hasattr(self, 'cursor') and self.cursor:
+                self.cursor.close()
+        except Exception as e:
+            logger.warning(f"PostgreSQL cursor close error: {e}")
+
+        try:
+            if hasattr(self, 'connection') and self.connection:
+                self.connection.close()
+        except Exception as e:
+            logger.warning(f"PostgreSQL connection close error: {e}")
+
     
     def get_all_tables_and_views(self, schema):
 
@@ -145,7 +174,7 @@ class PostgresConnector(DatabaseConnector):
                 WHERE table_schema = %s
                 AND table_name = %s
                 ORDER BY ordinal_position
-            ''', (schema.lower(), table_name.lower()))
+            ''', (schema, table_name))
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Error getting columns: {str(e)}")
@@ -301,6 +330,422 @@ class PostgresConnector(DatabaseConnector):
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Error getting value counts: {str(e)}")
+        
+    def get_null_count(self, schema, table, column):
+        query = f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE "{column}" IS NULL'
+        self.cursor.execute(query)
+        return self.cursor.fetchone()[0]
+
+    def get_distinct_count(self, schema, table, column):
+        query = f'SELECT COUNT(DISTINCT "{column}") FROM "{schema}"."{table}"'
+        self.cursor.execute(query)
+        return self.cursor.fetchone()[0]
+    
+    def get_null_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'SELECT * FROM "{schema}"."{table}" WHERE "{column}" IS NULL LIMIT {limit}'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching null violations: {str(e)}")
+
+    def get_non_distinct_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                AND "{column}" IN (
+                    SELECT "{column}"
+                    FROM "{schema}"."{table}"
+                    GROUP BY "{column}"
+                    HAVING COUNT(*) > 1
+                )
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching non-distinct violations: {str(e)}")
+    
+    def get_all_tables_and_views(self, schema):
+        try:
+            self.cursor.execute(f"""
+                SELECT table_name, table_type 
+                FROM information_schema.tables 
+                WHERE table_schema = '{schema}'
+                AND table_type IN ('BASE TABLE', 'VIEW')
+                ORDER BY table_name
+            """)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error getting tables and views: {str(e)}")
+        
+    def get_char_length_range(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT MIN(LENGTH("{column}")), MAX(LENGTH("{column}"))
+                FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+            ''')
+            min_len, max_len = self.cursor.fetchone()
+            return {'min_length': min_len, 'max_length': max_len}
+        except Exception as e:
+            raise Exception(f"Error getting character length range: {str(e)}")
+        
+    def get_invalid_datetime_count(self, schema, table, column, datetime_check_format='YYYY-MM-DD HH24:MI:SS'):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE TO_CHAR("{column}", "{datetime_check_format}") IS NULL
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking datetime format: {str(e)}")
+        
+    def get_letter_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" ~ '[A-Za-z]'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking for letters: {str(e)}")
+
+    def get_min_max_violations(self, schema, table, column, min_val, max_val, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" < {min_val} OR "{column}" > {max_val}
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching min-max violations: {str(e)}")
+
+    def get_char_length_violations(self, schema, table, column, min_len, max_len, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE LENGTH("{column}") < {min_len} OR LENGTH("{column}") > {max_len}
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching character length violations: {str(e)}")
+
+    def get_invalid_datetime_violations(self, schema, table, column, limit=100, datetime_check_format='YYYY-MM-DD HH24:MI:SS'):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE TO_DATE("{column}", "{datetime_check_format}") IS NULL AND "{column}" IS NOT NULL
+                FETCH FIRST {limit} ROWS ONLY
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching invalid datetime values: {str(e)}")
+
+    def get_letter_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE REGEXP_LIKE("{column}", '[A-Za-z]')
+                FETCH FIRST {limit} ROWS ONLY
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching letter violations: {str(e)}")
+
+    def get_number_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" ~ '[0-9]'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking for numbers: {str(e)}")
+        
+    def get_allowed_values_violation_count(self, schema, table, column, allowed_values):
+        try:
+            formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
+            total_query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}"
+            '''
+            violation_query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" NOT IN ({formatted_values})
+            '''
+            non_violation_query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}"  IN ({formatted_values})
+            '''
+            self.cursor.execute(total_query)
+            total = self.cursor.fetchone()[0]
+            self.cursor.execute(violation_query)
+            violation = self.cursor.fetchone()[0]
+            self.cursor.execute(non_violation_query)
+            non_violation = self.cursor.fetchone()[0]
+            return {
+                'total': total,
+                'violation': violation,
+                'non_violation': non_violation
+            }
+        except Exception as e:
+            raise Exception(f"Error checking allowed values: {str(e)}")
+        
+    def get_eng_numeric_format_violation_count(self, schema, table, column):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}"::TEXT LIKE '%%,%%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking ENG format: {str(e)}")
+
+    def get_tr_numeric_format_violation_count(self, schema, table, column):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}"::TEXT NOT LIKE '%%,%%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking TR format: {str(e)}")
+        
+    def get_number_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE REGEXP_LIKE("{column}", '[0-9]')
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching number violations: {str(e)}")
+
+    def get_allowed_values_violations(self, schema, table, column, allowed_values, limit=100):
+        try:
+            formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" NOT IN ({formatted_values})
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching allowed values violations: {str(e)}")
+
+    def get_eng_numeric_format_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND INSTR(TO_CHAR("{column}"), ',') > 0
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching ENG numeric format violations: {str(e)}")
+
+    def get_tr_numeric_format_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND INSTR(TO_CHAR("{column}"), ',') = 0
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching TR numeric format violations: {str(e)}")
+        
+    def get_case_inconsistency_count(self, schema, table, column, expected_case):
+        try:
+            if expected_case == 'upper':
+                condition = f'"{column}" != UPPER("{column}")'
+            elif expected_case == 'lower':
+                condition = f'"{column}" != LOWER("{column}")'
+            else:
+                raise ValueError("Unsupported case type")
+
+            query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND {condition}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking case consistency: {str(e)}")
+        
+    def get_future_date_violation_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" > CURRENT_DATE
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking future dates: {str(e)}")
+
+    def get_date_range_violation_count(self, schema, table, column, start_date, end_date):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" < DATE '{start_date}' OR "{column}" > DATE '{end_date}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking date range: {str(e)}")
+
+    def get_special_char_violation_count(self, schema, table, column, allowed_pattern):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" !~ '{allowed_pattern}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking special characters: {str(e)}")
+        
+    def get_case_inconsistency_violations(self, schema, table, column, expected_case, limit=100):
+        try:
+            if expected_case == 'upper':
+                condition = f'"{column}" != UPPER("{column}")'
+            elif expected_case == 'lower':
+                condition = f'"{column}" != LOWER("{column}")'
+            else:
+                raise ValueError("Unsupported case type")
+
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND {condition}
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching case inconsistency violations: {str(e)}")
+
+    def get_future_date_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" > CURRENT_DATE
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching future date violations: {str(e)}")
+
+    def get_date_range_violations(self, schema, table, column, start_date, end_date, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" < DATE '{start_date}' OR "{column}" > DATE '{end_date}'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching date range violations: {str(e)}")
+
+    def get_special_char_violations(self, schema, table, column, allowed_pattern, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" !~ '{allowed_pattern}'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching special character violations: {str(e)}")
+        
+
+
+        
+
+    def get_email_format_violation_count(self, schema, table, column):
+        try:
+            regex = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" !~ '{regex}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking email format: {str(e)}")
+
+    def get_regex_pattern_violation_count(self, schema, table, column, pattern):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" !~ '{pattern}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking regex pattern: {str(e)}")
+
+    def get_positive_value_violation_count(self, schema, table, column, strict):
+        try:
+            operator = '>' if strict else '>='
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND NOT ("{column}" {operator} 0)
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking positive values: {str(e)}")
+    
+    def get_email_format_violations(self, schema, table, column, limit=100):
+        try:
+            regex = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" !~ '{regex}'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching email format violations: {str(e)}")
+
+    def get_regex_pattern_violations(self, schema, table, column, pattern, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" !~ '{pattern}'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching regex pattern violations: {str(e)}")
+
+    def get_positive_value_violations(self, schema, table, column, strict, limit=100):
+        try:
+            operator = '>' if strict else '>='
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND NOT ("{column}" {operator} 0)
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching positive value violations: {str(e)}")
 
 class MSSQLConnector(DatabaseConnector):
     """MSSQL database connector"""
@@ -322,11 +767,19 @@ class MSSQLConnector(DatabaseConnector):
             raise Exception(f"Error connecting to MSSQL: {str(e)}")
     
     def close(self):
-        """Close MSSQL connection"""
-        if self.cursor:
-            self.cursor.close()
-        if self.connection:
-            self.connection.close()
+        """Close MSSQL connection safely"""
+        try:
+            if hasattr(self, 'cursor') and self.cursor:
+                self.cursor.close()
+        except Exception as e:
+            logger.warning(f"MSSQL cursor close error: {e}")
+
+        try:
+            if hasattr(self, 'connection') and self.connection:
+                self.connection.close()
+        except Exception as e:
+            logger.warning(f"MSSQL connection close error: {e}")
+
     
     def get_all_tables_and_views(self, schema: str) -> list:
         """Get all tables and views from MSSQL database"""
@@ -606,6 +1059,393 @@ class MSSQLConnector(DatabaseConnector):
         WHERE fk_cols.TABLE_SCHEMA = ? AND fk_cols.TABLE_NAME = ?
         ''', (schema, table_name))
         return {row[0]: (row[1], row[2]) for row in self.cursor.fetchall()}
+    
+    def get_null_count(self, schema, table, column):
+        query = f'SELECT COUNT(*) FROM [{schema}].[{table}] WHERE [{column}] IS NULL'
+        self.cursor.execute(query)
+        return self.cursor.fetchone()[0]
+
+    def get_distinct_count(self, schema, table, column):
+        query = f'SELECT COUNT(DISTINCT [{column}]) FROM [{schema}].[{table}]'
+        self.cursor.execute(query)
+        return self.cursor.fetchone()[0]
+    
+    def get_null_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'SELECT TOP {limit} * FROM [{schema}].[{table}] WHERE [{column}] IS NULL'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching null violations: {str(e)}")
+
+    def get_non_distinct_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL
+                AND [{column}] IN (
+                    SELECT [{column}]
+                    FROM [{schema}].[{table}]
+                    GROUP BY [{column}]
+                    HAVING COUNT(*) > 1
+                )
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching non-distinct violations: {str(e)}")
+    
+    def get_min_max_range(self, schema, table, column):
+        try:
+            query = f'SELECT MIN([{column}]), MAX([{column}]) FROM [{schema}].[{table}]'
+            self.cursor.execute(query)
+            min_val, max_val = self.cursor.fetchone()
+            return {'min': min_val, 'max': max_val, 'range': max_val - min_val if min_val is not None and max_val is not None else None}
+        except Exception as e:
+            raise Exception(f"Error getting min-max range: {str(e)}")
+        
+    def get_char_length_range(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT MIN(LEN([{column}])), MAX(LEN([{column}]))
+                FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL
+            ''')
+            min_len, max_len = self.cursor.fetchone()
+            return {'min_length': min_len, 'max_length': max_len}
+        except Exception as e:
+            raise Exception(f"Error getting character length range: {str(e)}")
+        
+    def get_invalid_datetime_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE TRY_CONVERT(datetime, [{column}]) IS NULL AND [{column}] IS NOT NULL
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking datetime format: {str(e)}")
+
+    def get_letter_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] LIKE '%[A-Za-z]%'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking for letters: {str(e)}")
+        
+    def get_min_max_violations(self, schema, table, column, min_val, max_val, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] < {min_val} OR [{column}] > {max_val}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching min-max violations: {str(e)}")
+
+    def get_char_length_violations(self, schema, table, column, min_len, max_len, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE LEN([{column}]) < {min_len} OR LEN([{column}]) > {max_len}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching character length violations: {str(e)}")
+
+    def get_invalid_datetime_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE TRY_CONVERT(datetime, [{column}]) IS NULL AND [{column}] IS NOT NULL
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching invalid datetime values: {str(e)}")
+
+    def get_letter_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] LIKE '%[A-Za-z]%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching letter violations: {str(e)}")
+
+    def get_number_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] LIKE '%[0-9]%'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking for numbers: {str(e)}")
+        
+    def get_allowed_values_violation_count(self, schema, table, column, allowed_values):
+        try:
+            formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
+            total_query = f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}]
+            '''
+            violation_query = f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}] NOT IN ({formatted_values})
+            '''
+            non_violation_query = f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}] IN ({formatted_values})
+            '''
+            self.cursor.execute(total_query)
+            total = self.cursor.fetchone()[0]
+            self.cursor.execute(violation_query)
+            violation = self.cursor.fetchone()[0]
+            self.cursor.execute(non_violation_query)
+            non_violation = self.cursor.fetchone()[0]
+            return {
+                'total': total,
+                'violation': violation,
+                'non_violation': non_violation
+            }
+        except Exception as e:
+            raise Exception(f"Error checking allowed values: {str(e)}")
+        
+    def get_eng_numeric_format_violation_count(self, schema, table, column):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND CONVERT(VARCHAR, [{column}]) LIKE '%,%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking ENG format: {str(e)}")
+
+    def get_tr_numeric_format_violation_count(self, schema, table, column):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND CONVERT(VARCHAR, [{column}]) NOT LIKE '%,%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking TR format: {str(e)}")
+        
+    def get_number_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] LIKE '%[0-9]%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching number violations: {str(e)}")
+
+    def get_allowed_values_violations(self, schema, table, column, allowed_values, limit=100):
+        try:
+            formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}] NOT IN ({formatted_values})
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching allowed values violations: {str(e)}")
+
+    def get_eng_numeric_format_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE CONVERT(VARCHAR, [{column}]) LIKE '%,%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching ENG numeric format violations: {str(e)}")
+
+    def get_tr_numeric_format_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE CONVERT(VARCHAR, [{column}]) NOT LIKE '%,%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching TR numeric format violations: {str(e)}")
+
+        
+    def get_case_inconsistency_count(self, schema, table, column, expected_case):
+        try:
+            if expected_case == 'upper':
+                condition = f'[{column}] COLLATE Latin1_General_CS_AS != UPPER([{column}])'
+            elif expected_case == 'lower':
+                condition = f'[{column}] COLLATE Latin1_General_CS_AS != LOWER([{column}])'
+            else:
+                raise ValueError("Unsupported case type")
+
+            query = f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND {condition}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking case consistency: {str(e)}")
+        
+    def get_future_date_violation_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] > GETDATE()
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking future dates: {str(e)}")
+
+    def get_date_range_violation_count(self, schema, table, column, start_date, end_date):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] < '{start_date}' OR [{column}] > '{end_date}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking date range: {str(e)}")
+
+    def get_special_char_violation_count(self, schema, table, column, allowed_pattern):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}] NOT LIKE '{allowed_pattern}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking special characters: {str(e)}")
+        
+    def get_case_inconsistency_violations(self, schema, table, column, expected_case, limit=100):
+        try:
+            if expected_case == 'upper':
+                condition = f'[{column}] COLLATE Latin1_General_CS_AS != UPPER([{column}])'
+            elif expected_case == 'lower':
+                condition = f'[{column}] COLLATE Latin1_General_CS_AS != LOWER([{column}])'
+            else:
+                raise ValueError("Unsupported case type")
+
+            query = f'SELECT TOP {limit} * FROM [{schema}].[{table}] WHERE {condition}'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching case inconsistency violations: {str(e)}")
+
+    def get_future_date_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'SELECT TOP {limit} * FROM [{schema}].[{table}] WHERE [{column}] > GETDATE()'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching future date violations: {str(e)}")
+
+    def get_date_range_violations(self, schema, table, column, start_date, end_date, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] < '{start_date}' OR [{column}] > '{end_date}'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching date range violations: {str(e)}")
+
+    def get_special_char_violations(self, schema, table, column, allowed_pattern, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}] NOT LIKE '{allowed_pattern}'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching special character violations: {str(e)}")
+        
+    def get_email_format_violation_count(self, schema, table, column):
+        try:
+            regex = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}] NOT LIKE '%@%.%'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking email format: {str(e)}")
+
+    def get_regex_pattern_violation_count(self, schema, table, column, pattern):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}] NOT LIKE '{pattern}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking regex pattern: {str(e)}")
+
+    def get_positive_value_violation_count(self, schema, table, column, strict):
+        try:
+            operator = '>' if strict else '>='
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND NOT ([{column}] {operator} 0)
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking positive values: {str(e)}")
+        
+    def get_email_format_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}] NOT LIKE '%@%.%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching email format violations: {str(e)}")
+
+    def get_regex_pattern_violations(self, schema, table, column, pattern, limit=100):
+        try:
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND [{column}] NOT LIKE '{pattern}'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching regex pattern violations: {str(e)}")
+
+    def get_positive_value_violations(self, schema, table, column, strict, limit=100):
+        try:
+            operator = '>' if strict else '>='
+            query = f'''
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL AND NOT ([{column}] {operator} 0)
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching positive value violations: {str(e)}")
+
 
 class MySQLConnector(DatabaseConnector):
     """MySQL database connector implementation"""
@@ -626,11 +1466,19 @@ class MySQLConnector(DatabaseConnector):
             raise Exception(f"Error connecting to MySQL: {str(e)}")
     
     def close(self) -> None:
-        """Close MySQL connection"""
-        if hasattr(self, 'cursor') and self.cursor:
-            self.cursor.close()
-        if hasattr(self, 'connection') and self.connection:
-            self.connection.close()
+        """Close MySQL connection safely"""
+        try:
+            if hasattr(self, 'cursor') and self.cursor:
+                self.cursor.close()
+        except Exception as e:
+            logger.warning(f"MySQL cursor close error: {e}")
+
+        try:
+            if hasattr(self, 'connection') and self.connection:
+                self.connection.close()
+        except Exception as e:
+            logger.warning(f"MySQL connection close error: {e}")
+
     
     def get_all_tables_and_views(self, schema: str) -> list:
         """Get all tables and views from MySQL database"""
@@ -912,142 +1760,732 @@ class MySQLConnector(DatabaseConnector):
             WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND REFERENCED_TABLE_NAME IS NOT NULL
         """, (schema, table_name))
         return {row[0]: (row[1], row[2]) for row in self.cursor.fetchall()}
+    
+    def get_null_count(self, schema, table, column):
+        query = f'SELECT COUNT(*) FROM `{schema}`.`{table}` WHERE `{column}` IS NULL'
+        self.cursor.execute(query)
+        return self.cursor.fetchone()[0]
+
+    def get_distinct_count(self, schema, table, column):
+        query = f'SELECT COUNT(DISTINCT `{column}`) FROM `{schema}`.`{table}`'
+        self.cursor.execute(query)
+        return self.cursor.fetchone()[0]
+    
+    def get_null_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'SELECT * FROM `{schema}`.`{table}` WHERE `{column}` IS NULL LIMIT {limit}'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching null violations: {str(e)}")
+
+    def get_non_distinct_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL
+                AND `{column}` IN (
+                    SELECT `{column}`
+                    FROM `{schema}`.`{table}`
+                    GROUP BY `{column}`
+                    HAVING COUNT(*) > 1
+                )
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching non-distinct violations: {str(e)}")
+    
+    def get_min_max_range(self, schema, table, column):
+        try:
+            query = f'SELECT MIN(`{column}`), MAX(`{column}`) FROM `{schema}`.`{table}`'
+            self.cursor.execute(query)
+            min_val, max_val = self.cursor.fetchone()
+            return {'min': min_val, 'max': max_val, 'range': max_val - min_val if min_val is not None and max_val is not None else None}
+        except Exception as e:
+            raise Exception(f"Error getting min-max range: {str(e)}")
+    
+    def get_char_length_range(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT MIN(CHAR_LENGTH(`{column}`)), MAX(CHAR_LENGTH(`{column}`))
+                FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL
+            ''')
+            min_len, max_len = self.cursor.fetchone()
+            return {'min_length': min_len, 'max_length': max_len}
+        except Exception as e:
+            raise Exception(f"Error getting character length range: {str(e)}")
+        
+    def get_invalid_datetime_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE STR_TO_DATE(`{column}`, '%Y-%m-%d %H:%i:%s') IS NULL AND `{column}` IS NOT NULL
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking datetime format: {str(e)}")
+        
+    def get_letter_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` REGEXP '[A-Za-z]'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking for letters: {str(e)}")
+        
+    def get_min_max_violations(self, schema, table, column, min_val, max_val, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` < {min_val} OR `{column}` > {max_val}
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching min-max violations: {str(e)}")
+
+    def get_char_length_violations(self, schema, table, column, min_len, max_len, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE CHAR_LENGTH(`{column}`) < {min_len} OR CHAR_LENGTH(`{column}`) > {max_len}
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching character length violations: {str(e)}")
+
+    def get_invalid_datetime_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE STR_TO_DATE(`{column}`, '%Y-%m-%d %H:%i:%s') IS NULL AND `{column}` IS NOT NULL
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching invalid datetime values: {str(e)}")
+
+    def get_letter_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` REGEXP '[A-Za-z]'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching letter violations: {str(e)}")
+
+    def get_number_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` REGEXP '[0-9]'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking for numbers: {str(e)}")
+        
+    def get_allowed_values_violation_count(self, schema, table, column, allowed_values):
+        try:
+            formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
+            total_query = f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}`
+            '''
+            violation_query = f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT IN ({formatted_values})
+            '''
+            non_violation_query = f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` IN ({formatted_values})
+            '''
+            self.cursor.execute(total_query)
+            total = self.cursor.fetchone()[0]
+            self.cursor.execute(violation_query)
+            violation = self.cursor.fetchone()[0]
+            self.cursor.execute(non_violation_query)
+            non_violation = self.cursor.fetchone()[0]
+            return {
+                'total': total,
+                'violation': violation,
+                'non_violation': non_violation
+            }
+        except Exception as e:
+            raise Exception(f"Error checking allowed values: {str(e)}")
+        
+    def get_eng_numeric_format_violation_count(self, schema, table, column):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` LIKE '%,%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking ENG format: {str(e)}")
+
+    def get_tr_numeric_format_violation_count(self, schema, table, column):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT LIKE '%,%'
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking TR format: {str(e)}")
+        
+    def get_number_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` REGEXP '[0-9]'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching number violations: {str(e)}")
+
+    def get_allowed_values_violations(self, schema, table, column, allowed_values, limit=100):
+        try:
+            formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT IN ({formatted_values})
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching allowed values violations: {str(e)}")
+
+    def get_eng_numeric_format_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` LIKE '%,%'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching ENG numeric format violations: {str(e)}")
+
+    def get_tr_numeric_format_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT LIKE '%,%'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching TR numeric format violations: {str(e)}")
+
+        
+    def get_case_inconsistency_count(self, schema, table, column, expected_case):
+        try:
+            if expected_case == 'upper':
+                condition = f'BINARY `{column}` != BINARY UPPER(`{column}`)'
+            elif expected_case == 'lower':
+                condition = f'BINARY `{column}` != BINARY LOWER(`{column}`)'
+            else:
+                raise ValueError("Unsupported case type")
+
+            query = f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND {condition}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking case consistency: {str(e)}")
+        
+    def get_future_date_violation_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` > CURDATE()
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking future dates: {str(e)}")
+
+    def get_date_range_violation_count(self, schema, table, column, start_date, end_date):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` < '{start_date}' OR `{column}` > '{end_date}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking date range: {str(e)}")
+
+    def get_special_char_violation_count(self, schema, table, column, allowed_pattern):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT REGEXP '{allowed_pattern}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking special characters: {str(e)}")
+        
+    def get_case_inconsistency_violations(self, schema, table, column, expected_case, limit=100):
+        try:
+            if expected_case == 'upper':
+                condition = f'BINARY `{column}` != BINARY UPPER(`{column}`)'
+            elif expected_case == 'lower':
+                condition = f'BINARY `{column}` != BINARY LOWER(`{column}`)'
+            else:
+                raise ValueError("Unsupported case type")
+
+            query = f'SELECT * FROM `{schema}`.`{table}` WHERE {condition} LIMIT {limit}'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching case inconsistency violations: {str(e)}")
+
+    def get_future_date_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'SELECT * FROM `{schema}`.`{table}` WHERE `{column}` > CURDATE() LIMIT {limit}'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching future date violations: {str(e)}")
+
+    def get_date_range_violations(self, schema, table, column, start_date, end_date, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` < '{start_date}' OR `{column}` > '{end_date}'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching date range violations: {str(e)}")
+
+    def get_special_char_violations(self, schema, table, column, allowed_pattern, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT REGEXP '{allowed_pattern}'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching special character violations: {str(e)}")
+        
+    def get_email_format_violation_count(self, schema, table, column):
+        try:
+            regex = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT REGEXP '{regex}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking email format: {str(e)}")
+
+    def get_regex_pattern_violation_count(self, schema, table, column, pattern):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT REGEXP '{pattern}'
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking regex pattern: {str(e)}")
+
+    def get_positive_value_violation_count(self, schema, table, column, strict):
+        try:
+            operator = '>' if strict else '>='
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND NOT (`{column}` {operator} 0)
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking positive values: {str(e)}")
+        
+    def get_email_format_violations(self, schema, table, column, limit=100):
+        try:
+            regex = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT REGEXP '{regex}'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching email format violations: {str(e)}")
+
+    def get_regex_pattern_violations(self, schema, table, column, pattern, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND `{column}` NOT REGEXP '{pattern}'
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching regex pattern violations: {str(e)}")
+
+    def get_positive_value_violations(self, schema, table, column, strict, limit=100):
+        try:
+            operator = '>' if strict else '>='
+            query = f'''
+                SELECT * FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL AND NOT (`{column}` {operator} 0)
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching positive value violations: {str(e)}")
+
+        
+    
+
+import logging
+
+# Configure logging at the top of your module
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
 class OracleConnector(DatabaseConnector):
     """Oracle database connector implementation"""
+
     def connect(self, config: dict) -> None:
         """Connect to Oracle database"""
         try:
             import oracledb
             dsn = f"{config.get('host')}:{config.get('port')}/{config.get('dbname')}"
+            logger.debug(f"Connecting to Oracle with DSN: {dsn}, User: {config.get('user')}")
             self.connection = oracledb.connect(
                 user=config.get('user'),
                 password=config.get('password'),
                 dsn=dsn
             )
             self.cursor = self.connection.cursor()
+            logger.info("Oracle connection established successfully.")
         except Exception as e:
+            logger.exception("Error connecting to Oracle")
             raise Exception(f"Error connecting to Oracle: {str(e)}")
 
-    def close(self) -> None:
-        """Close Oracle connection"""
-        if hasattr(self, 'cursor') and self.cursor:
-            self.cursor.close()
-        if hasattr(self, 'connection') and self.connection:
-            self.connection.close()
+    def close(self):
+        """Safely close Oracle connection and cursor"""
+        import oracledb
+
+        # Close cursor
+        try:
+            if hasattr(self, 'cursor') and self.cursor:
+                self.cursor.close()
+                logger.debug("Cursor closed.")
+        except oracledb.InterfaceError:
+            logger.warning("Cursor already closed.")
+        except Exception as e:
+            logger.warning(f"Unexpected error closing cursor: {e}")
+
+        # Close connection
+        try:
+            if hasattr(self, 'connection') and self.connection:
+                self.connection.close()
+                logger.debug("Connection closed.")
+        except oracledb.InterfaceError as e:
+            if "DPY-1001" in str(e):
+                logger.warning("Connection already disconnected.")
+            else:
+                logger.warning(f"InterfaceError closing connection: {e}")
+        except Exception as e:
+            logger.warning(f"Error closing connection: {e}")
+
+
+
+    def ensure_connected(self, config: dict):
+        try:
+            self.cursor.execute("SELECT 1 FROM DUAL")
+        except:
+            self.connect(config)
+
+
 
     def get_all_tables_and_views(self, schema: str) -> list:
         """Get all tables and views from Oracle database"""
         try:
-            query = f"""
-                SELECT table_name, 'TABLE' as object_type FROM all_tables WHERE owner = :schema
+            logger.debug(f"Fetching all tables and views for schema: {schema}")
+            query = """
+                SELECT table_name, 'TABLE' as object_type 
+                FROM all_tables 
+                WHERE owner = :schema
                 UNION ALL
-                SELECT view_name as table_name, 'VIEW' as object_type FROM all_views WHERE owner = :schema
+                SELECT view_name as table_name, 'VIEW' as object_type 
+                FROM all_views 
+                WHERE owner = :schema
                 ORDER BY table_name
             """
-            self.cursor.execute(query, schema=schema.upper())
-            return self.cursor.fetchall()
+
+            self.cursor.execute(query, {"schema": schema.upper()})
+
+            results = self.cursor.fetchall()
+            logger.debug(f"Fetched {len(results)} objects from schema {schema}")
+            return results
         except Exception as e:
+            logger.exception("Error getting tables and views")
             raise Exception(f"Error getting tables and views: {str(e)}")
 
     def get_table_analysis(self, schema: str, table: str) -> dict:
         """Get detailed analysis of a table including size, row count, and column information"""
         try:
             # Get row count
-            self.cursor.execute(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
+            row_count_query = f'SELECT COUNT(*) FROM "{schema}"."{table}"'
+            self.cursor.execute(row_count_query)
             row_count = self.cursor.fetchone()[0]
+            logger.debug(f"Row count for {schema}.{table}: {row_count}")
 
-            # Get table size (in MB)
-            size_query = """
+            # Get table and index size (in MB)
+            size_query = f'''
                 SELECT NVL(SUM(bytes),0)/1024/1024 AS total_size_mb
                 FROM dba_segments
-                WHERE owner = :schema AND segment_name = :table AND segment_type = 'TABLE'
-            """
-            self.cursor.execute(size_query, schema=schema.upper(), table=table.upper())
-            total_size_mb = self.cursor.fetchone()[0]
+                WHERE owner = '{schema}' AND segment_name = '{table}' AND segment_type = 'TABLE'
+            '''
+            logger.debug(f"size Query: {size_query}")
+            logger.debug(f"Params: schema={schema}, table={table}")
+
+            self.cursor.execute(size_query)
+            total_size = self.cursor.fetchone()[0] or 0
+
+            index_size_query = f'''
+                SELECT NVL(SUM(bytes),0)/1024/1024 AS index_size_mb
+                FROM dba_segments
+                WHERE owner = '{schema}' AND segment_name = '{table}' AND segment_type = 'INDEX'
+            '''
+
+            logger.debug(f"index Query: {index_size_query}")
+            logger.debug(f"Params: schema={schema}, table={table}")
+
+            self.cursor.execute(index_size_query)
+            index_size = self.cursor.fetchone()[0] or 0
+
+            # For Oracle, table_size is total_size minus index_size
+            table_size = total_size - index_size if total_size and index_size else total_size
+
+            # Get average row length
+            avg_row_query = f'''
+                SELECT AVG_ROW_LEN FROM dba_tables WHERE owner = '{schema}' AND table_name = '{table}'
+            '''
+            logger.debug(f"avgrow Query: {avg_row_query}")
+            logger.debug(f"Params: schema='{schema}', table='{table}'")
+
+            self.cursor.execute(avg_row_query)
+            avg_row = self.cursor.fetchone()
+            avg_row_width = avg_row[0] if avg_row is not None else 0
+
+            logger.debug(avg_row_width)
+
+
+            # Get last analyzed date
+            last_analyzed_query = f'''
+                SELECT LAST_ANALYZED FROM dba_tables WHERE owner = '{schema}' AND table_name = '{table}'
+            '''
+            logger.debug(f"last Query: {last_analyzed_query}")
+            logger.debug(f"Params: schema='{schema}', table='{table}'")
+
+            self.cursor.execute(last_analyzed_query)
+            last_analyzed = self.cursor.fetchone()
+            last_analyzed = last_analyzed[0] if last_analyzed else None
+            if last_analyzed:
+                try:
+                    last_analyzed = last_analyzed.strftime('%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    last_analyzed = str(last_analyzed)
 
             # Get column information
-            column_query = """
+            column_query = f'''
                 SELECT column_name, data_type, nullable, data_length, data_precision, data_scale
                 FROM all_tab_columns
-                WHERE owner = :schema AND table_name = :table
+                WHERE owner = '{schema}' AND table_name = '{table}'
                 ORDER BY column_id
-            """
-            self.cursor.execute(column_query, schema=schema.upper(), table=table.upper())
+            '''
+            logger.debug(f"column Query: {column_query}")
+            logger.debug(f"Params: schema='{schema}', table='{table}'")
+
+            self.cursor.execute(column_query)
             columns = self.cursor.fetchall()
+            logger.debug(f"columns: {columns}")
 
             return {
                 'row_count': row_count,
-                'total_size': total_size_mb,
-                'table_size': total_size_mb,  # Oracle does not separate index size easily here
-                'index_size': 0,
-                'avg_row_width': None,
-                'last_analyzed': None,
+                'total_size': round(total_size, 2),
+                'table_size': round(table_size, 2),
+                'index_size': round(index_size, 2),
+                'avg_row_width': avg_row_width,
+                'last_analyzed': last_analyzed,
                 'columns': columns
             }
+
+
         except Exception as e:
             raise Exception(f"Error getting table analysis: {str(e)}")
+
+    def safe_lob_to_str(val):
+        try:
+            return str(val.read()) if hasattr(val, 'read') else val
+        except Exception:
+            return str(val) if val is not None else None
 
     def get_columns(self, schema: str, table: str) -> list:
         """Get column information for a table"""
         try:
-            query = """
+            logger.debug(f"Getting columns for table: {schema}.{table}")
+            query = f'''
                 SELECT column_name, data_type, nullable, data_length, data_precision, data_scale
                 FROM all_tab_columns
-                WHERE owner = :schema AND table_name = :table
+                WHERE owner = '{schema}' AND table_name = '{table}'
                 ORDER BY column_id
-            """
-            self.cursor.execute(query, schema=schema.upper(), table=table.upper())
-            return self.cursor.fetchall()
+            '''
+            self.cursor.execute(query)
+            columns = self.cursor.fetchall()
+            logger.debug(f"Fetched {len(columns)} columns from {schema}.{table}")
+            return columns
         except Exception as e:
+            logger.exception(f"Error getting columns for {schema}.{table}")
             raise Exception(f"Error getting columns: {str(e)}")
+
+
+    import logging
+
+    logger = logging.getLogger(__name__)
 
     def get_column_details(self, schema: str, table: str, column: str) -> dict:
         """Get detailed column analysis"""
         try:
-            # Get column data type
-            col_info_query = """
+            logger.debug(f"Analyzing column: {schema}.{table}.{column}")
+
+            # Get column data type and metadata
+            col_info_query = f'''
                 SELECT data_type, nullable, data_length, data_precision, data_scale
                 FROM all_tab_columns
-                WHERE owner = :schema AND table_name = :table AND column_name = :column
-            """
-            self.cursor.execute(col_info_query, schema=schema.upper(), table=table.upper(), column=column.upper())
+                WHERE owner = '{schema}' AND table_name = '{table}' AND column_name = '{column}'
+            '''
+            logger.debug(f"Column info query:\n{col_info_query}")
+            self.cursor.execute(col_info_query)
             col_info = self.cursor.fetchone()
+            logger.debug(f"Column info result: {col_info}")
+
             if not col_info:
+                logger.warning(f"Column {schema}.{table}.{column} not found.")
                 return {
                     'data_type': None,
                     'distinct_count': 0,
                     'null_count': 0,
+                    'unique_count': 0,
                     'metrics': {}
                 }
+
             data_type = col_info[0].lower()
+            if data_type == "clob":
+                logger.warning(f"Skipping CLOB column: {schema}.{table}.{column}")
+                return {
+                    'data_type': data_type,
+                    'distinct_count': 0,
+                    'null_count': 0,
+                    'unique_count': 0,
+                    'metrics': {}
+                }
 
             # Get distinct and null counts
-            count_query = f'SELECT COUNT(DISTINCT "{column}") AS distinct_count, SUM(CASE WHEN "{column}" IS NULL THEN 1 ELSE 0 END) AS null_count FROM "{schema}"."{table}"'
+            count_query = f'''
+                SELECT 
+                    COUNT(DISTINCT "{column}") AS distinct_count, 
+                    SUM(CASE WHEN "{column}" IS NULL THEN 1 ELSE 0 END) AS null_count 
+                FROM "{schema}"."{table}"
+            '''
+            logger.debug(f"Count query:\n{count_query}")
             self.cursor.execute(count_query)
             counts = self.cursor.fetchone()
+            logger.debug(f"Distinct/null count result: {counts}")
 
             # Get unique count
-            unique_count_query = f'SELECT COUNT(*) FROM (SELECT "{column}" FROM "{schema}"."{table}" GROUP BY "{column}" HAVING COUNT(*) = 1)'
+            unique_count_query = f'''
+                SELECT COUNT(*) FROM (
+                    SELECT "{column}" 
+                    FROM "{schema}"."{table}" 
+                    GROUP BY "{column}" 
+                    HAVING COUNT(*) = 1
+                )
+            '''
+            logger.debug(f"Unique count query:\n{unique_count_query}")
             self.cursor.execute(unique_count_query)
             unique_count = self.cursor.fetchone()[0]
+            logger.debug(f"Unique count result: {unique_count}")
 
             metrics = {}
+
             if data_type in ['number', 'float', 'integer', 'decimal']:
-                metrics_query = f'SELECT MIN("{column}"), MAX("{column}"), AVG("{column}") FROM "{schema}"."{table}" WHERE "{column}" IS NOT NULL'
+                metrics_query = f'''
+                    SELECT 
+                        MIN("{column}"), 
+                        MAX("{column}"), 
+                        AVG("{column}") 
+                    FROM "{schema}"."{table}" 
+                    WHERE "{column}" IS NOT NULL
+                '''
+                logger.debug(f"Numeric metrics query:\n{metrics_query}")
                 self.cursor.execute(metrics_query)
                 min_val, max_val, avg_val = self.cursor.fetchone()
+                logger.debug(f"Numeric metrics: min={min_val}, max={max_val}, avg={avg_val}")
                 metrics.update({'min': min_val, 'max': max_val, 'avg': avg_val})
+
             elif data_type in ['varchar2', 'char', 'nvarchar2', 'nchar', 'clob']:
-                metrics_query = f'SELECT MIN(LENGTH("{column}")), MAX(LENGTH("{column}")), AVG(LENGTH("{column}")) FROM "{schema}"."{table}" WHERE "{column}" IS NOT NULL'
+                metrics_query = f'''
+                    SELECT 
+                        MIN(LENGTH("{column}")), 
+                        MAX(LENGTH("{column}")), 
+                        AVG(LENGTH("{column}")) 
+                    FROM "{schema}"."{table}" 
+                    WHERE "{column}" IS NOT NULL
+                '''
+                logger.debug(f"String length metrics query:\n{metrics_query}")
                 self.cursor.execute(metrics_query)
                 min_length, max_length, avg_length = self.cursor.fetchone()
+                logger.debug(f"String length metrics: min={min_length}, max={max_length}, avg={avg_length}")
                 metrics.update({'min_length': min_length, 'max_length': max_length, 'avg_length': avg_length})
+
             elif data_type in ['date', 'timestamp']:
-                metrics_query = f'SELECT MIN("{column}"), MAX("{column}") FROM "{schema}"."{table}" WHERE "{column}" IS NOT NULL'
+                metrics_query = f'''
+                    SELECT 
+                        MIN("{column}"), 
+                        MAX("{column}") 
+                    FROM "{schema}"."{table}" 
+                    WHERE "{column}" IS NOT NULL
+                '''
+                logger.debug(f"Date metrics query:\n{metrics_query}")
                 self.cursor.execute(metrics_query)
                 min_date, max_date = self.cursor.fetchone()
-                metrics.update({'min_date': str(min_date) if min_date else None, 'max_date': str(max_date) if max_date else None})
+                logger.debug(f"Date metrics: min_date={min_date}, max_date={max_date}")
+                metrics.update({
+                    'min_date': str(min_date) if min_date else None,
+                    'max_date': str(max_date) if max_date else None
+                })
 
             return {
                 'data_type': col_info[0],
@@ -1056,13 +2494,36 @@ class OracleConnector(DatabaseConnector):
                 'unique_count': unique_count,
                 'metrics': metrics
             }
+
         except Exception as e:
+            logger.exception(f"Error getting column details for {schema}.{table}.{column}")
             raise Exception(f"Error getting column details: {str(e)}")
+        
+    def get_value_counts(self, schema: str, table: str, column: str) -> list:
+        """Get value counts for a column in Oracle"""
+        try:
+            query = f'''
+                SELECT "{column}", COUNT(*) AS count
+                FROM "{schema}"."{table}"
+                GROUP BY "{column}"
+                ORDER BY count DESC
+
+            '''
+            logger.debug(f"Value counts query:\n{query}")
+            self.cursor.execute(query)
+            results = self.cursor.fetchall()
+            logger.debug(f"Fetched {len(results)} value counts for {schema}.{table}.{column}")
+            return results
+        except Exception as e:
+            logger.exception(f"Error getting value counts for {schema}.{table}.{column}")
+            raise Exception(f"Error getting value counts: {str(e)}")
+
 
     def get_sample_data(self, schema: str, table: str, limit: int = 100) -> list:
         """Get sample data from a table"""
         try:
             query = f'SELECT * FROM "{schema}"."{table}" WHERE ROWNUM <= {limit}'
+            print("burasi calisiyor")
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except Exception as e:
@@ -1070,26 +2531,446 @@ class OracleConnector(DatabaseConnector):
 
     def get_primary_keys(self, schema, table_name):
         self.cursor.execute("""
-            SELECT c.name
-            FROM sys.indexes i
-            INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-            INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-            INNER JOIN sys.tables t ON i.object_id = t.object_id
-            WHERE i.is_primary_key = 1 AND t.name = ? AND SCHEMA_NAME(t.schema_id) = ?
-        """, (table_name, schema))
+            SELECT cols.column_name
+            FROM all_constraints cons
+            JOIN all_cons_columns cols ON cons.constraint_name = cols.constraint_name
+            WHERE cons.constraint_type = 'P'
+              AND cons.owner = :schema_name
+              AND cons.table_name = :table_name
+        """, {"schema_name": schema, "table_name": table_name})
+
         return [row[0] for row in self.cursor.fetchall()]
 
     def get_foreign_keys(self, schema, table_name):
         self.cursor.execute("""
-            SELECT 
-                parent_col.name AS column_name,
-                ref_table.name AS referenced_table,
-                ref_col.name AS referenced_column
-            FROM sys.foreign_key_columns fk
-            INNER JOIN sys.tables parent_table ON fk.parent_object_id = parent_table.object_id
-            INNER JOIN sys.columns parent_col ON fk.parent_object_id = parent_col.object_id AND fk.parent_column_id = parent_col.column_id
-            INNER JOIN sys.tables ref_table ON fk.referenced_object_id = ref_table.object_id
-            INNER JOIN sys.columns ref_col ON fk.referenced_object_id = ref_col.object_id AND fk.referenced_column_id = ref_col.column_id
-            WHERE parent_table.name = ? AND SCHEMA_NAME(parent_table.schema_id) = ?
-        """, (table_name, schema))
-        return {row[0]: (row[1], row[2]) for row in self.cursor.fetchall()} 
+            SELECT
+                acc.column_name,
+                rcons.table_name AS referenced_table,
+                racc.column_name AS referenced_column
+            FROM all_constraints cons
+            JOIN all_cons_columns acc ON cons.constraint_name = acc.constraint_name AND cons.owner = acc.owner
+            JOIN all_constraints rcons ON cons.r_constraint_name = rcons.constraint_name AND cons.owner = rcons.owner
+            JOIN all_cons_columns racc ON rcons.constraint_name = racc.constraint_name AND rcons.owner = racc.owner AND acc.position = racc.position
+            WHERE cons.constraint_type = 'R'
+              AND cons.owner = :schema_name
+              AND cons.table_name = :table_name
+        """, {"schema_name": schema.upper(), "table_name": table_name.upper()})
+
+        return {row[0]: (row[1], row[2]) for row in self.cursor.fetchall()}
+
+    def get_null_count(self, schema, table, column):
+        query = f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE "{column}" IS NULL'
+        self.cursor.execute(query)
+        return self.cursor.fetchone()[0]
+
+    def get_distinct_count(self, schema, table, column):
+        query = f'SELECT COUNT(DISTINCT \"{column}\") FROM \"{schema}\".\"{table}\"'
+        self.cursor.execute(query)
+        return self.cursor.fetchone()[0]
+
+    def get_null_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'SELECT * FROM "{schema}"."{table}" WHERE "{column}" IS NULL AND ROWNUM <= {limit}'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching null violations: {str(e)}")
+
+    def get_non_distinct_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                AND "{column}" IN (
+                    SELECT "{column}"
+                    FROM "{schema}"."{table}"
+                    GROUP BY "{column}"
+                    HAVING COUNT(*) > 1
+                ) AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching non-distinct violations: {str(e)}")
+    
+    def get_min_max_range(self, schema, table, column):
+        try:
+            query = f'SELECT MIN("{column}"), MAX("{column}") FROM "{schema}"."{table}"'
+            self.cursor.execute(query)
+            min_val, max_val = self.cursor.fetchone()
+            return {'min': min_val, 'max': max_val, 'range': max_val - min_val if min_val is not None and max_val is not None else None}
+        except Exception as e:
+            raise Exception(f"Error getting min-max range: {str(e)}")
+    
+    def get_char_length_range(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT MIN(LENGTH("{column}")), MAX(LENGTH("{column}"))
+                FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+            ''')
+            min_len, max_len = self.cursor.fetchone()
+            return {'min_length': min_len, 'max_length': max_len}
+        except Exception as e:
+            raise Exception(f"Error getting character length range: {str(e)}")
+        
+    def get_invalid_datetime_count(self, schema, table, column, datetime_check_format, datetime_check_regex=r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'):
+        try:
+            query = f'''
+                 SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                AND REGEXP_LIKE(TO_CHAR("{column}", '{datetime_check_format}'), '{datetime_check_regex}')
+            '''
+            print("Executing SQL datetime format check using regex:")
+            print("Format:", datetime_check_format)
+            print("Regex :", datetime_check_format)
+            print("Query :", query)
+
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking datetime format via regex: {str(e)}")
+
+            
+    def get_letter_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE REGEXP_LIKE("{column}", '[A-Za-z]')
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking for letters: {str(e)}")
+        
+    def get_min_max_violations(self, schema, table, column, min_val, max_val, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" < {min_val} OR "{column}" > {max_val} AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching min-max violations: {str(e)}")
+
+    def get_char_length_violations(self, schema, table, column, min_len, max_len, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE LENGTH("{column}") < {min_len} OR LENGTH("{column}") > {max_len} AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching character length violations: {str(e)}")
+
+    def get_invalid_datetime_violations(self, schema, table, column, limit=100, datetime_check_format='YYYY-MM-DD HH24:MI:SS.FF3', datetime_check_regex=r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND NOT REGEXP_LIKE(TO_CHAR("{column}", '{datetime_check_format}'), '{datetime_check_regex}')
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching invalid datetime values: {str(e)}")
+
+    def get_letter_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE REGEXP_LIKE("{column}", '[A-Za-z]') AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching letter violations: {str(e)}")
+
+
+    def get_number_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE REGEXP_LIKE("{column}", '[0-9]')
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking for numbers: {str(e)}")
+    def get_allowed_values_violation_count(self, schema, table, column, allowed_values):
+        try:
+            formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
+            total_query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" NOT IN ({formatted_values})
+            '''
+            violation_query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" NOT IN ({formatted_values})
+            '''
+            non_violation_query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" IN ({formatted_values})
+            '''
+            self.cursor.execute(total_query)
+            total = self.cursor.fetchone()[0]
+            self.cursor.execute(violation_query)
+            violation = self.cursor.fetchone()[0]
+            self.cursor.execute(non_violation_query)
+            non_violation = self.cursor.fetchone()[0]
+            return {
+                'total': total,
+                'violation': violation,
+                'non_violation': non_violation
+            }
+        except Exception as e:
+            raise Exception(f"Error checking allowed values: {str(e)}")
+    def get_eng_numeric_format_violation_count(self, schema, table, column):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND INSTR(TO_CHAR("{column}"), ',') > 0
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking ENG format: {str(e)}")
+
+    def get_tr_numeric_format_violation_count(self, schema, table, column):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND INSTR(TO_CHAR("{column}"), ',') = 0
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking TR format: {str(e)}")
+        
+
+    def get_number_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE REGEXP_LIKE("{column}", '[0-9]') AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching number violations: {str(e)}")
+
+    def get_allowed_values_violations(self, schema, table, column, allowed_values, limit=100):
+        try:
+            formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND "{column}" NOT IN ({formatted_values}) AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching allowed values violations: {str(e)}")
+
+    def get_eng_numeric_format_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND INSTR(TO_CHAR("{column}"), ',') > 0 AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching ENG numeric format violations: {str(e)}")
+
+    def get_tr_numeric_format_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND INSTR(TO_CHAR("{column}"), ',') = 0 AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching TR numeric format violations: {str(e)}")
+
+    def get_case_inconsistency_count(self, schema, table, column, expected_case):
+        try:
+            if expected_case == 'upper':
+                condition = f'"{column}" != UPPER("{column}")'
+            elif expected_case == 'lower':
+                condition = f'"{column}" != LOWER("{column}")'
+            else:
+                raise ValueError("Unsupported case type")
+
+            query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND {condition}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking case consistency: {str(e)}")
+
+    def get_future_date_violation_count(self, schema, table, column):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" > SYSDATE
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking future dates: {str(e)}")
+
+    def get_date_range_violation_count(self, schema, table, column, start_date, end_date):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" < TO_DATE('{start_date}', 'YYYY-MM-DD') OR "{column}" > TO_DATE('{end_date}', 'YYYY-MM-DD')
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking date range: {str(e)}")
+
+    def get_special_char_violation_count(self, schema, table, column, allowed_pattern):
+        try:
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE REGEXP_LIKE("{column}", '[^ {allowed_pattern}]')
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking special characters: {str(e)}")
+        
+    def get_case_inconsistency_violations(self, schema, table, column, expected_case, limit=100):
+        try:
+            if expected_case == 'upper':
+                condition = f'"{column}" != UPPER("{column}")'
+            elif expected_case == 'lower':
+                condition = f'"{column}" != LOWER("{column}")'
+            else:
+                raise ValueError("Unsupported case type")
+
+            query = f'SELECT * FROM "{schema}"."{table}" WHERE {condition} AND ROWNUM <= {limit}'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching case inconsistency violations: {str(e)}")
+
+    def get_future_date_violations(self, schema, table, column, limit=100):
+        try:
+            query = f'SELECT * FROM "{schema}"."{table}" WHERE "{column}" > SYSDATE AND ROWNUM <= {limit}'
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching future date violations: {str(e)}")
+
+    def get_date_range_violations(self, schema, table, column, start_date, end_date, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" < TO_DATE('{start_date}', 'YYYY-MM-DD') OR "{column}" > TO_DATE('{end_date}', 'YYYY-MM-DD')
+                AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching date range violations: {str(e)}")
+
+    def get_special_char_violations(self, schema, table, column, allowed_pattern, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE REGEXP_LIKE("{column}", '[^ {allowed_pattern}]') AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching special character violations: {str(e)}")
+
+    def get_email_format_violation_count(self, schema, table, column):
+        try:
+            regex = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+            query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND NOT REGEXP_LIKE("{column}", '{regex}')
+            '''
+            print("Executing SQL Query:")
+            print(query)
+
+            self.cursor.execute(query)
+            result = self.cursor.fetchone()[0]
+            print("Email format violation count:", result)
+            return result
+        except Exception as e:
+            print(f"[ERROR] get_email_format_violation_count failed: {e}")
+            raise
+
+
+            
+        except Exception as e:
+            raise Exception(f"Error checking email format: {str(e)}")
+
+    def get_regex_pattern_violation_count(self, schema, table, column, pattern):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND  REGEXP_LIKE("{column}", '{pattern}')
+            '''
+            print("Executing SQL Query:")
+            print(query)
+            print(pattern)
+
+            self.cursor.execute(query)
+            result = self.cursor.fetchone()[0]
+            print("Format violation count:", result)
+            return result
+        except Exception as e:
+            print(f"[ERROR] get_regex_format_violation_count failed: {e}")
+            raise
+
+
+    def get_positive_value_violation_count(self, schema, table, column, strict):
+        try:
+            operator = '>' if strict else '>='
+            self.cursor.execute(f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND NOT ("{column}" {operator} 0)
+            ''')
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error checking positive values: {str(e)}")
+        
+    def get_email_format_violations(self, schema, table, column, limit=100):
+        try:
+            regex = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE REGEXP_LIKE("{column}", '{regex}') = 0 AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching email format violations: {str(e)}")
+
+    def get_regex_pattern_violations(self, schema, table, column, pattern, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND REGEXP_LIKE("{column}", '{pattern}') AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching regex pattern violations: {str(e)}")
+
+    def get_positive_value_violations(self, schema, table, column, strict, limit=100):
+        try:
+            operator = '>' if strict else '>='
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL AND NOT ("{column}" {operator} 0) AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching positive value violations: {str(e)}")
+

@@ -121,28 +121,22 @@ def main():
 
         if app_mode == "Summary Statistics":
             show_all_tables_summary(connector, schema)
+            st.markdown("---")
         elif app_mode == "Detailed Statistics":
-            st.header("Detailed Database Statistics")
-            
-            if st.button("Generate Detailed Statistics"):
+            if st.button("🚀 Run Now"):
                 with st.spinner("Generating detailed statistics..."):
                     df = generate_detailed_statistics(connector, schema)
-                    
-                    # Display the statistics
                     st.dataframe(df)
-                    
-                    # Create Excel file
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                         df.to_excel(writer, sheet_name='Database Statistics', index=False)
-                    
-                    # Add download button
                     st.download_button(
                         label="Download Excel Report",
                         data=buffer.getvalue(),
                         file_name=f"database_statistics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
+
         elif app_mode == "Quality Tests":
             show_quality_tests_page(connector, schema)
         else:  # Table Analysis

@@ -17,7 +17,7 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
     try:
         # Get table statistics
         table_stats = connector.get_table_analysis(schema, table)
-        st.write("DEBUG: table_stats =", table_stats)
+        #st.write("DEBUG: table_stats =", table_stats)
         
         # Display table statistics
         st.subheader("Table Statistics")
@@ -40,15 +40,15 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
         
         # Get columns
         columns = connector.get_columns(schema, table)
-        st.write("DEBUG: columns =", columns)
+        #st.write("DEBUG: columns =", columns)
         
         # Get sample data
         sample_data = connector.get_sample_data(schema, table)
-        st.write("DEBUG: sample_data[0:3] =", sample_data[:3] if sample_data else "EMPTY")
+        #st.write("DEBUG: sample_data[0:3] =", sample_data[:3] if sample_data else "EMPTY")
         
         # Get column names
         col_names = [col[0] for col in columns]
-        st.write("DEBUG: col_names =", col_names)
+        #st.write("DEBUG: col_names =", col_names)
         
         # DataFrame creation
         if sample_data:
@@ -56,97 +56,64 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
             if hasattr(sample_data[0], '__class__') and sample_data[0].__class__.__name__ == 'Row':
                 sample_data = [tuple(row) for row in sample_data]
             df_sample = pd.DataFrame(sample_data, columns=col_names)
-            st.write("DEBUG: df_sample.head()", df_sample.head())
-            st.dataframe(df_sample)
+            #st.write("DEBUG: df_sample.head()", df_sample.head())
+            #st.dataframe(df_sample)
         
         # Get column statistics
         st.subheader("Column Statistics")
         # Calculate average column widths
         column_widths = {}
+
         for col in columns:
-            st.write(f"DEBUG: processing column = {col}")
             col_name = col[0]
-            data_type = col[1].lower()
-            max_length = col[3]
-            precision = col[4]
-            scale = col[5]
-            
-            # Format data type with constraints
+            st.subheader(col_name)
+
+
+            data_type = (col[1] or "").lower()
+            max_length = col[3] or 0
+            precision = col[4] or 0
+            scale = col[5] or 0
+
+
+            # Format data type with constraints (safe formatting)
             formatted_type = data_type
-            if max_length and max_length > 0:
+            if max_length > 0:
                 formatted_type += f"({max_length})"
-            elif precision and scale:
+            elif precision > 0 and scale > 0:
                 formatted_type += f"({precision},{scale})"
-            elif precision:
+            elif precision > 0:
                 formatted_type += f"({precision})"
-            
+
             col_details = connector.get_column_details(schema, table, col_name)
-            st.write(f"DEBUG: col_details for {col_name} =", col_details)
-            
-            if col_details and 'metrics' in col_details:
-                metrics = col_details['metrics']
-                
-                if data_type in ['varchar', 'char', 'text', 'longtext', 'mediumtext', 'tinytext', 'nvarchar', 'nchar', 'ntext']:
-                    # For text columns, use average length
-                    column_widths[col_name] = metrics.get('avg_length', 0)
-                
-                elif data_type in ['int', 'bigint', 'smallint', 'tinyint']:
-                    # For integer types, use fixed sizes
-                    type_sizes = {
-                        'tinyint': 1,
-                        'smallint': 2,
-                        'int': 4,
-                        'bigint': 8
-                    }
-                    column_widths[col_name] = type_sizes.get(data_type, 4)
-                
-                elif data_type in ['decimal', 'numeric']:
-                    # For decimal types, calculate based on precision and scale
-                    precision = metrics.get('precision', 0)
-                    scale = metrics.get('scale', 0)
-                    # Each digit takes 4 bits, plus 1 byte for sign
-                    column_widths[col_name] = (precision * 4 + 8) // 8
-                
-                elif data_type in ['float', 'double']:
-                    # For floating point types, use fixed sizes
-                    type_sizes = {
-                        'float': 4,
-                        'double': 8
-                    }
-                    column_widths[col_name] = type_sizes.get(data_type, 8)
-                
-                elif data_type in ['date']:
-                    column_widths[col_name] = 3  # 3 bytes for date
-                
-                elif data_type in ['datetime', 'timestamp']:
-                    column_widths[col_name] = 8  # 8 bytes for datetime
-                
-                else:
-                    # For other types, use max length if available
-                    column_widths[col_name] = metrics.get('max_length', 0)
-        
-        # Calculate total width
-        total_width = sum(column_widths.values())
-        st.write("DEBUG: column_widths =", column_widths)
-        st.write("DEBUG: total_width =", total_width)
-        
-        for col in columns:
-            col_name = col[0]
-            data_type = col[1].lower()
-            max_length = col[3]
-            precision = col[4]
-            scale = col[5]
-            
-            # Format data type with constraints
-            formatted_type = data_type
-            if max_length and max_length > 0:
-                formatted_type += f"({max_length})"
-            elif precision and scale:
-                formatted_type += f"({precision},{scale})"
-            elif precision:
-                formatted_type += f"({precision})"
-            
-            st.write(f"### {col_name}")
+            metrics = col_details.get('metrics', {}) if col_details else {}
+
+            if data_type in ['varchar', 'char', 'text', 'longtext', 'mediumtext', 'tinytext', 'nvarchar', 'nchar', 'ntext']:
+                column_widths[col_name] = metrics.get('avg_length') or 0
+
+            elif data_type in ['int', 'bigint', 'smallint', 'tinyint']:
+                type_sizes = {'tinyint': 1, 'smallint': 2, 'int': 4, 'bigint': 8}
+                column_widths[col_name] = type_sizes.get(data_type, 4)
+
+            elif data_type in ['decimal', 'numeric']:
+                p = precision
+                s = scale
+                # fallback to metric if defined
+                p = metrics.get('precision', p) or 0
+                s = metrics.get('scale', s) or 0
+                column_widths[col_name] = (p * 4 + 8) // 8 if p else 0
+
+            elif data_type in ['float', 'double']:
+                column_widths[col_name] = 4 if data_type == 'float' else 8
+
+            elif data_type == 'date':
+                column_widths[col_name] = 3
+
+            elif data_type in ['datetime', 'timestamp']:
+                column_widths[col_name] = 8
+
+            else:
+                column_widths[col_name] = max_length or metrics.get('max_length', 0)
+
             
             # Create tabs for each column
             stat_tab, viz_tab = st.tabs(["Statistics", "Visualizations"])
@@ -154,7 +121,7 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
             with stat_tab:
                 # Get column details
                 col_details = connector.get_column_details(schema, table, col_name)
-                st.write(f"DEBUG: col_details for {col_name} (stat_tab) =", col_details)
+                #st.write(f"DEBUG: col_details for {col_name} (stat_tab) =", col_details)
                 if not col_details:
                     st.warning(f"Could not get details for column {col_name}")
                     continue
@@ -171,6 +138,8 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
                 
                 # Display column width information
                 col_width = column_widths.get(col_name, 0)
+                total_width = sum(v or 0 for v in column_widths.values())
+
                 width_percentage = (col_width / total_width * 100) if total_width > 0 else 0
                 
                 width_col1, width_col2 = st.columns(2)
@@ -195,31 +164,31 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
             with viz_tab:
                 # Get column details for visualizations
                 col_details = connector.get_column_details(schema, table, col_name)
-                st.write(f"DEBUG: col_details for {col_name} (viz_tab) =", col_details)
+                #st.write(f"DEBUG: col_details for {col_name} (viz_tab) =", col_details)
                 if not col_details:
                     st.warning(f"Could not get details for column {col_name}")
                     continue
                 
                 # Add visualizations based on data type
                 data_type = col_details['data_type'].lower()
-                st.write(f"DEBUG: data_type for {col_name} (viz_tab) = {data_type}")
+                #st.write(f"DEBUG: data_type for {col_name} (viz_tab) = {data_type}")
                 
-                if data_type in ['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'double']:
+                if data_type in ['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'double', 'number', 'real']:
                     # Get value distribution for numeric columns
                     value_counts = connector.get_value_counts(schema, table, col_name)
-                    st.write(f"DEBUG: value_counts for {col_name} (viz_tab) =", value_counts[:10] if value_counts else "EMPTY")
+                    #st.write(f"DEBUG: value_counts for {col_name} (viz_tab) =", value_counts[:10] if value_counts else "EMPTY")
                     if value_counts:
-                        st.write(f"DEBUG: type(value_counts[0]) = {type(value_counts[0])}, value_counts[0] = {value_counts[0]}")
+                        #st.write(f"DEBUG: type(value_counts[0]) = {type(value_counts[0])}, value_counts[0] = {value_counts[0]}")
                         # Flatten if needed
                         if len(value_counts) > 0 and len(value_counts[0]) == 1 and isinstance(value_counts[0][0], tuple):
                             value_counts = [row[0] for row in value_counts]
-                            st.write("DEBUG: value_counts flattened =", value_counts[:10])
+                            #st.write("DEBUG: value_counts flattened =", value_counts[:10])
                         # Convert pyodbc.Row to tuple if needed
                         if hasattr(value_counts[0], '__class__') and value_counts[0].__class__.__name__ == 'Row':
                             value_counts = [tuple(row) for row in value_counts]
-                            st.write("DEBUG: value_counts converted to tuple =", value_counts[:10])
+                            #st.write("DEBUG: value_counts converted to tuple =", value_counts[:10])
                         df_counts = pd.DataFrame(value_counts, columns=['value', 'count'])
-                        st.write(f"DEBUG: df_counts for {col_name} (viz_tab) =", df_counts.head())
+                        #st.write(f"DEBUG: df_counts for {col_name} (viz_tab) =", df_counts.head())
                         df_counts['value'] = pd.to_numeric(df_counts['value'])
                         # Height-balanced histogram (quantile-based)
                         try:
@@ -236,40 +205,39 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
                             if dbtype == 'mssql':
                                 query = f"SELECT TOP 10000 {quoted_col} FROM {quoted_table} WHERE {quoted_col} IS NOT NULL"
                             else:
-                                query = f"SELECT {quoted_col} FROM {quoted_table} WHERE {quoted_col} IS NOT NULL {limit_clause}"
+                                query = f"SELECT {quoted_col} FROM {quoted_table}"
                             df_col = pd.read_sql(query, connector.connection)
-                            st.write(f"DEBUG: df_col for {col_name} (viz_tab) =", df_col.head())
+                            #st.write(f"DEBUG: df_col for {col_name} (viz_tab) =", df_col.head())
                             if not df_col.empty:
-                                bin_edges, counts = height_balanced_histogram(df_col[col_name], n_buckets=10)
-                                bin_labels = [f"{bin_edges[i]:.2f} - {bin_edges[i+1]:.2f}" for i in range(len(bin_edges)-1)]
+                                bin_edges, counts, bin_labels = height_balanced_histogram(df_col[col_name], n_buckets=10)
                                 fig = px.bar(x=bin_labels, y=counts, labels={'x': 'Value Range', 'y': 'Count'},
-                                             title=f"Height-Balanced Histogram for {col_name}")
-                                st.write(f"DEBUG: Height-Balanced Histogram for {col_name} (viz_tab) created.")
+                                            title=f"Height-Balanced Histogram for {col_name}")
                                 st.plotly_chart(fig)
+
                         except Exception as e:
                             st.info(f"Could not plot height-balanced histogram: {e}")
-                            st.write(f"DEBUG: Exception in histogram for {col_name} (viz_tab):", str(e))
+                            #st.write(f"DEBUG: Exception in histogram for {col_name} (viz_tab):", str(e))
                             # Create box plot
-                            fig = px.box(df_counts, y='value',
-                                        title=f"Box Plot for {col_name}")
-                            st.write(f"DEBUG: Box Plot for {col_name} (viz_tab) created.")
-                            st.plotly_chart(fig)
-                elif data_type in ['varchar', 'char', 'text', 'longtext', 'mediumtext', 'tinytext', 'nvarchar', 'nchar', 'ntext', 'character varying']:
+                        fig = px.box(df_counts, y='value',
+                                    title=f"Box Plot for {col_name}")
+                        #st.write(f"DEBUG: Box Plot for {col_name} (viz_tab) created.")
+                        st.plotly_chart(fig)
+                elif data_type in ['varchar', 'char', 'text', 'longtext', 'mediumtext', 'tinytext', 'nvarchar', 'nchar', 'varchar2', 'ntext', 'character varying']:
                     # Get value counts for text columns
                     value_counts = connector.get_value_counts(schema, table, col_name)
-                    st.write(f"DEBUG: value_counts for {col_name} (viz_tab) =", value_counts[:10] if value_counts else "EMPTY")
+                    #st.write(f"DEBUG: value_counts for {col_name} (viz_tab) =", value_counts[:10] if value_counts else "EMPTY")
                     if value_counts:
-                        st.write(f"DEBUG: type(value_counts[0]) = {type(value_counts[0])}, value_counts[0] = {value_counts[0]}")
+                        #st.write(f"DEBUG: type(value_counts[0]) = {type(value_counts[0])}, value_counts[0] = {value_counts[0]}")
                         # Flatten if needed
                         if len(value_counts) > 0 and len(value_counts[0]) == 1 and isinstance(value_counts[0][0], tuple):
                             value_counts = [row[0] for row in value_counts]
-                            st.write("DEBUG: value_counts flattened =", value_counts[:10])
+                            #st.write("DEBUG: value_counts flattened =", value_counts[:10])
                         # Convert pyodbc.Row to tuple if needed
                         if hasattr(value_counts[0], '__class__') and value_counts[0].__class__.__name__ == 'Row':
                             value_counts = [tuple(row) for row in value_counts]
-                            st.write("DEBUG: value_counts converted to tuple =", value_counts[:10])
+                            #st.write("DEBUG: value_counts converted to tuple =", value_counts[:10])
                         df_counts = pd.DataFrame(value_counts, columns=['value', 'count'])
-                        st.write(f"DEBUG: df_counts for {col_name} (viz_tab) =", df_counts.head())
+                        #st.write(f"DEBUG: df_counts for {col_name} (viz_tab) =", df_counts.head())
                         # Sort and split
                         df_counts_sorted = df_counts.sort_values('count', ascending=False)
                         top9_df = df_counts_sorted.head(9)
@@ -282,7 +250,7 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
                             top9_df = df_counts_sorted.head(10)
                         # Create a matrix-like DataFrame for heatmap
                         heatmap_data = top9_df.pivot_table(index='value', values='count')
-                        st.write(f"DEBUG: heatmap_data for {col_name} (viz_tab) =", heatmap_data)
+                        #st.write(f"DEBUG: heatmap_data for {col_name} (viz_tab) =", heatmap_data)
                         # Create heatmap
                         fig = px.imshow(
                             heatmap_data,
@@ -290,7 +258,7 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
                             labels=dict(x="Frequency", y=col_name, color="Count"),
                             title=f"Top 10 Values Heatmap for {col_name}"
                         )
-                        st.write(f"DEBUG: Heatmap for {col_name} (viz_tab) created.")
+                        #st.write(f"DEBUG: Heatmap for {col_name} (viz_tab) created.")
                         st.plotly_chart(fig)
             
             st.write("---")
@@ -353,14 +321,44 @@ def col_analysis(connector, schema, table, col_info):
         st.write(f"- Min Date: {metrics.get('min_date', 'N/A')}")
         st.write(f"- Max Date: {metrics.get('max_date', 'N/A')}")
 
-# Helper for height-balanced histogram
+import pandas as pd
+import numpy as np
+
 def height_balanced_histogram(series, n_buckets=10):
     series = series.dropna()
     if series.nunique() == 1:
-        return [series.min(), series.max()], [len(series)]
-    buckets, bin_edges = pd.qcut(series, q=n_buckets, retbins=True, duplicates='drop')
-    counts = buckets.value_counts(sort=False)
-    return bin_edges, counts.values
+        return [series.min(), series.max()], [len(series)], [f"{series.min()}"]
+
+    try:
+        buckets, bin_edges = pd.qcut(series, q=n_buckets, retbins=True, duplicates='raise')
+        counts = buckets.value_counts(sort=False).values
+        labels = [f"{bin_edges[i]:.2f} - {bin_edges[i+1]:.2f}" for i in range(len(bin_edges)-1)]
+        return bin_edges, counts, labels
+    except ValueError as e:
+        buckets, bin_edges = pd.qcut(series, q=n_buckets, retbins=True, duplicates='drop')
+        counts = buckets.value_counts(sort=False).values
+
+        bin_edges = np.array(bin_edges)
+        unique_edges = [bin_edges[0]]
+        merged_counts = []
+        labels = []
+
+        current_count = counts[0]
+        for i in range(1, len(counts)):
+            if bin_edges[i] == bin_edges[i + 1]:
+                current_count += counts[i]
+            else:
+                unique_edges.append(bin_edges[i])
+                merged_counts.append(current_count)
+                labels.append(f"{unique_edges[-2]:.2f} - {unique_edges[-1]:.2f}")
+                current_count = counts[i]
+        unique_edges.append(bin_edges[-1])
+        merged_counts.append(current_count)
+        labels.append(f"{unique_edges[-2]:.2f} - {unique_edges[-1]:.2f}")
+
+        return unique_edges, merged_counts, labels
+
+
 
 # Helper for quoting SQL identifiers (column/table names)
 def sql_quote_identifier(identifier, dbtype):
@@ -371,7 +369,7 @@ def sql_quote_identifier(identifier, dbtype):
     elif dbtype == 'mssql':
         return f'[{identifier}]'
     elif dbtype == 'oracle':
-        return f'"{identifier.upper()}"'
+        return f'"{identifier}"'
     else:
         return identifier
 
@@ -384,6 +382,6 @@ def sql_quote_table(schema, table, dbtype):
     elif dbtype == 'mssql':
         return f'[{schema}].[{table}]'
     elif dbtype == 'oracle':
-        return f'"{schema.upper()}"."{table.upper()}"'
+        return f'"{schema}"."{table}"'
     else:
         return f'{schema}.{table}'
