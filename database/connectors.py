@@ -97,6 +97,13 @@ class PostgresConnector(DatabaseConnector):
         except Exception as e:
             logger.warning(f"PostgreSQL connection close error: {e}")
 
+    def ensure_connected(self, config: dict):
+        try:
+            self.cursor.execute("SELECT 1")
+        except:
+            self.connect(config)
+
+
     
     def get_all_tables_and_views(self, schema):
 
@@ -550,7 +557,7 @@ class PostgresConnector(DatabaseConnector):
         try:
             query = f'''
                 SELECT * FROM "{schema}"."{table}"
-                WHERE "{column}" IS NOT NULL AND INSTR(TO_CHAR("{column}"), ',') > 0
+                WHERE "{column}" IS NOT NULL AND "{column}"::TEXT LIKE '%%,%%'
                 LIMIT {limit}
             '''
             self.cursor.execute(query)
@@ -562,7 +569,7 @@ class PostgresConnector(DatabaseConnector):
         try:
             query = f'''
                 SELECT * FROM "{schema}"."{table}"
-                WHERE "{column}" IS NOT NULL AND INSTR(TO_CHAR("{column}"), ',') = 0
+                WHERE "{column}" IS NOT NULL AND "{column}"::TEXT NOT LIKE '%%,%%'
                 LIMIT {limit}
             '''
             self.cursor.execute(query)
@@ -746,6 +753,184 @@ class PostgresConnector(DatabaseConnector):
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Error fetching positive value violations: {str(e)}")
+        
+    def get_min_max_range(self, schema, table, column):
+        try:
+            query = f'SELECT MIN("{column}"), MAX("{column}") FROM "{schema}"."{table}"'
+            self.cursor.execute(query)
+            min_val, max_val = self.cursor.fetchone()
+            return {
+                'min': min_val,
+                'max': max_val,
+                'range': max_val - min_val if min_val is not None and max_val is not None else None
+            }
+        except Exception as e:
+            raise Exception(f"Error getting min-max range: {str(e)}")
+
+
+        
+    def is_valid_tckn(self, tckn):
+        """Check if a single TCKN value is valid using the same logic as your PostgreSQL function"""
+        if not tckn or not isinstance(tckn, str) or not tckn.isdigit() or len(tckn) != 11:
+            return False
+        
+        if tckn[0] == '0':
+            return False
+        
+        digits = [int(d) for d in tckn]
+        
+        # Validate 10th digit
+        odd_sum = digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
+        even_sum = digits[1] + digits[3] + digits[5] + digits[7]
+        tenth = ((odd_sum * 7) - even_sum) % 10
+        if digits[9] != tenth:
+            return False
+        
+        # Validate 11th digit
+        eleventh = sum(digits[:10]) % 10
+        if digits[10] != eleventh:
+            return False
+        
+        return True
+
+    def get_tckn_violation_count(self, schema, table, column):
+        """Count all invalid TCKN values in the column"""
+        try:
+            # Get all non-null values first
+            query = f'''
+                SELECT "{column}" FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+            '''
+            self.cursor.execute(query)
+            rows = self.cursor.fetchall()
+            
+            # Count violations
+            violation_count = 0
+            for row in rows:
+                tckn = str(row[0])  # First (and only) column in our query
+                if not self.is_valid_tckn(tckn):
+                    violation_count += 1
+            
+            return violation_count
+            
+        except Exception as e:
+            raise Exception(f"Error counting TCKN violations: {str(e)}")
+
+    def get_tckn_violations(self, schema, table, column, limit=100):
+        """Get sample rows with invalid TCKN values"""
+        try:
+            # Get all non-null values first
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                LIMIT {limit}  
+            '''
+            self.cursor.execute(query)
+            rows = self.cursor.fetchall()
+            
+            # Find column index - CORRECTED VERSION
+            col_index = next(
+                (i for i, col in enumerate(self.cursor.description) 
+                if col.name.lower() == column.lower()
+            ))
+            
+            # Collect violations
+            violations = []
+            for row in rows:
+                try:
+                    tckn = str(row[col_index]) if row[col_index] is not None else ''
+                    if not self.is_valid_tckn(tckn):
+                        violations.append(row)
+                        if len(violations) >= limit:
+                            break
+                except (IndexError, TypeError):
+                    continue
+            
+            return violations
+            
+        except Exception as e:
+            raise Exception(f"Error fetching TCKN violations: {str(e)}")
+        
+    def get_date_logic_violation_count(self, schema, table, start_date_col, end_date_col):
+        """Count rows where start_date >= end_date"""
+        try:
+            query = f'''
+                SELECT COUNT(*) 
+                FROM "{schema}"."{table}"
+                WHERE "{start_date_col}" IS NOT NULL
+                AND "{end_date_col}" IS NOT NULL
+                AND "{start_date_col}" >= "{end_date_col}"
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error counting date logic violations: {str(e)}")
+
+    def get_date_logic_violations(self, schema, table, start_date_col, end_date_col, limit=100):
+        """Get sample rows where start_date >= end_date"""
+        try:
+            query = f'''
+                SELECT * 
+                FROM "{schema}"."{table}"
+                WHERE "{start_date_col}" IS NOT NULL
+                AND "{end_date_col}" IS NOT NULL
+                AND "{start_date_col}" >= "{end_date_col}"
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching date logic violations: {str(e)}")
+        
+    def get_text_column_date_formats(self, schema, table, column_name, limit=1000):
+        try:
+            query = f"""
+                SELECT *,
+
+                    CASE
+                        WHEN {column_name} ~ '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$' THEN 'DD.MM.YYYY'
+                        WHEN {column_name} ~ '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$' THEN 'YYYY-MM-DD'
+                        WHEN {column_name} ~ '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$' THEN 'MM/DD/YYYY'
+                        WHEN {column_name} ~ '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$' THEN 'DD/MM/YYYY'
+                        WHEN {column_name} ~ '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$' THEN 'YYYY.MM.DD'
+                        ELSE 'Unknown'
+                    END AS format,
+
+                    CASE
+                        WHEN {column_name} ~ '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$' AND TO_DATE({column_name}, 'DD.MM.YYYY') IS NOT NULL THEN TRUE
+                        WHEN {column_name} ~ '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$' AND TO_DATE({column_name}, 'YYYY-MM-DD') IS NOT NULL THEN TRUE
+                        WHEN {column_name} ~ '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$' AND TO_DATE({column_name}, 'MM/DD/YYYY') IS NOT NULL THEN TRUE
+                        WHEN {column_name} ~ '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$' AND TO_DATE({column_name}, 'DD/MM/YYYY') IS NOT NULL THEN TRUE
+                        WHEN {column_name} ~ '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$' AND TO_DATE({column_name}, 'YYYY.MM.DD') IS NOT NULL THEN TRUE
+                        ELSE FALSE
+                    END AS is_valid,
+
+                    COALESCE(
+                        CASE WHEN {column_name} ~ '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$' THEN TO_DATE({column_name}, 'DD.MM.YYYY') END,
+                        CASE WHEN {column_name} ~ '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$' THEN TO_DATE({column_name}, 'YYYY-MM-DD') END,
+                        CASE WHEN {column_name} ~ '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$' THEN TO_DATE({column_name}, 'MM/DD/YYYY') END,
+                        CASE WHEN {column_name} ~ '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$' THEN TO_DATE({column_name}, 'DD/MM/YYYY') END,
+                        CASE WHEN {column_name} ~ '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$' THEN TO_DATE({column_name}, 'YYYY.MM.DD') END
+                    ) AS parsed_date
+
+                FROM "{schema}"."{table}"
+                WHERE {column_name} IS NOT NULL
+                LIMIT {limit};
+            """
+
+            self.cursor.execute(query)
+
+            # ✅ Convert rows to list of dictionaries
+            columns = [desc[0] for desc in self.cursor.description]
+            rows = self.cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
+
+        except Exception as e:
+            raise Exception(f"Error fetching date logic violations: {str(e)}")
+
+
+
+
 
 class MSSQLConnector(DatabaseConnector):
     """MSSQL database connector"""
@@ -779,6 +964,15 @@ class MSSQLConnector(DatabaseConnector):
                 self.connection.close()
         except Exception as e:
             logger.warning(f"MSSQL connection close error: {e}")
+
+    def ensure_connected(self, config: dict):
+        try:
+            # lightweight test
+            self.cursor.execute("SELECT 1")
+            _ = self.cursor.fetchone()
+        except pyodbc.Error:
+            # if that fails, reconnect
+            self.connect(config)
 
     
     def get_all_tables_and_views(self, schema: str) -> list:
@@ -1445,6 +1639,137 @@ class MSSQLConnector(DatabaseConnector):
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Error fetching positive value violations: {str(e)}")
+        
+
+        
+    def is_valid_tckn(self, tckn):
+        """Check if a single TCKN value is valid using the same logic as your PostgreSQL function"""
+        if not tckn or not isinstance(tckn, str) or not tckn.isdigit() or len(tckn) != 11:
+            return False
+        
+        if tckn[0] == '0':
+            return False
+        
+        digits = [int(d) for d in tckn]
+        
+        # Validate 10th digit
+        odd_sum = digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
+        even_sum = digits[1] + digits[3] + digits[5] + digits[7]
+        tenth = ((odd_sum * 7) - even_sum) % 10
+        if digits[9] != tenth:
+            return False
+        
+        # Validate 11th digit
+        eleventh = sum(digits[:10]) % 10
+        if digits[10] != eleventh:
+            return False
+        
+        return True
+        
+    def get_tckn_violation_count(self, schema, table, column):
+        """Count all invalid TCKN values in the column - MSSQL"""
+        try:
+            query = f'''
+                SELECT COUNT(*) 
+                FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL
+                AND dbo.is_valid_tckn([{column}]) = 0
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error counting TCKN violations: {str(e)}")
+
+    def get_tckn_violations(self, schema, table, column, limit=100):
+        """Get sample rows with invalid TCKN values - MSSQL"""
+        try:
+            query = f'''
+                SELECT TOP {limit} * 
+                FROM [{schema}].[{table}]
+                WHERE [{column}] IS NOT NULL
+                AND dbo.is_valid_tckn([{column}]) = 0
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching TCKN violations: {str(e)}")
+        
+    def get_date_logic_violation_count(self, schema, table, start_date_col, end_date_col):
+        """MSSQL: Count rows where start_date >= end_date"""
+        try:
+            query = f'''
+                SELECT COUNT(*) 
+                FROM [{schema}].[{table}]
+                WHERE [{start_date_col}] IS NOT NULL
+                AND [{end_date_col}] IS NOT NULL
+                AND [{start_date_col}] >= [{end_date_col}]
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"MSSQL error counting date logic violations: {str(e)}")
+
+    def get_date_logic_violations(self, schema, table, start_date_col, end_date_col, limit=100):
+        """MSSQL: Get sample rows where start_date >= end_date"""
+        try:
+            query = f'''
+                SELECT TOP {limit} * 
+                FROM [{schema}].[{table}]
+                WHERE [{start_date_col}] IS NOT NULL
+                AND [{end_date_col}] IS NOT NULL
+                AND [{start_date_col}] >= [{end_date_col}]
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"MSSQL error fetching date logic violations: {str(e)}")
+        
+    def get_text_column_date_formats_mssql(self, schema, table, column_name, limit=1000):
+        try:
+            query = f"""
+                SELECT TOP {limit} *, 
+
+                    CASE
+                        WHEN [{column_name}] LIKE '[0-3][0-9].[0-1][0-9].[1-2][0-9][0-9][0-9]' THEN 'DD.MM.YYYY'
+                        WHEN [{column_name}] LIKE '[1-2][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]' THEN 'YYYY-MM-DD'
+                        WHEN [{column_name}] LIKE '[0-1][0-9]/[0-3][0-9]/[1-2][0-9][0-9][0-9]' THEN 'MM/DD/YYYY'
+                        WHEN [{column_name}] LIKE '[0-3][0-9]/[0-1][0-9]/[1-2][0-9][0-9][0-9]' THEN 'DD/MM/YYYY'
+                        WHEN [{column_name}] LIKE '[1-2][0-9][0-9][0-9].[0-1][0-9].[0-3][0-9]' THEN 'YYYY.MM.DD'
+                        ELSE 'Unknown'
+                    END AS format,
+
+                    CASE
+                        WHEN TRY_CONVERT(DATE, [{column_name}], 104) IS NOT NULL THEN 1  -- DD.MM.YYYY
+                        WHEN TRY_CONVERT(DATE, [{column_name}], 120) IS NOT NULL THEN 1  -- YYYY-MM-DD
+                        WHEN TRY_CONVERT(DATE, [{column_name}], 101) IS NOT NULL THEN 1  -- MM/DD/YYYY
+                        WHEN TRY_CONVERT(DATE, [{column_name}], 103) IS NOT NULL THEN 1  -- DD/MM/YYYY
+                        WHEN TRY_CONVERT(DATE, [{column_name}], 102) IS NOT NULL THEN 1  -- YYYY.MM.DD (fallback)
+                        ELSE 0
+                    END AS is_valid,
+
+                    COALESCE(
+                        TRY_CONVERT(DATE, [{column_name}], 104),
+                        TRY_CONVERT(DATE, [{column_name}], 120),
+                        TRY_CONVERT(DATE, [{column_name}], 101),
+                        TRY_CONVERT(DATE, [{column_name}], 103),
+                        TRY_CONVERT(DATE, [{column_name}], 102)
+                    ) AS parsed_date
+
+                FROM [{schema}].[{table}]
+                WHERE [{column_name}] IS NOT NULL;
+            """
+            self.cursor.execute(query)
+            columns = [desc[0] for desc in self.cursor.description]
+            rows = self.cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
+
+        except Exception as e:
+            raise Exception(f"MSSQL error fetching date formats: {str(e)}")
+
+        
+
+
+
 
 
 class MySQLConnector(DatabaseConnector):
@@ -1478,6 +1803,14 @@ class MySQLConnector(DatabaseConnector):
                 self.connection.close()
         except Exception as e:
             logger.warning(f"MySQL connection close error: {e}")
+
+    def ensure_connected(self, config: dict):
+        try:
+            # mysql-connector supports ping with auto-reconnect
+            self.cursor.execute("SELECT 1")
+        except:
+            # ping might not exist or connection is broken
+            self.connect(config)
 
     
     def get_all_tables_and_views(self, schema: str) -> list:
@@ -2161,8 +2494,137 @@ class MySQLConnector(DatabaseConnector):
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Error fetching positive value violations: {str(e)}")
+        
 
         
+    def is_valid_tckn(self, tckn):
+        """Check if a single TCKN value is valid using the same logic as your PostgreSQL function"""
+        if not tckn or not isinstance(tckn, str) or not tckn.isdigit() or len(tckn) != 11:
+            return False
+        
+        if tckn[0] == '0':
+            return False
+        
+        digits = [int(d) for d in tckn]
+        
+        # Validate 10th digit
+        odd_sum = digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
+        even_sum = digits[1] + digits[3] + digits[5] + digits[7]
+        tenth = ((odd_sum * 7) - even_sum) % 10
+        if digits[9] != tenth:
+            return False
+        
+        # Validate 11th digit
+        eleventh = sum(digits[:10]) % 10
+        if digits[10] != eleventh:
+            return False
+        
+        return True
+    
+    def get_tckn_violation_count(self, schema, table, column):
+        """Count all invalid TCKN values in the column - MySQL"""
+        try:
+            query = f'''
+                SELECT COUNT(*) 
+                FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL
+                AND is_valid_tckn(`{column}`) = FALSE
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error counting TCKN violations: {str(e)}")
+
+    def get_tckn_violations(self, schema, table, column, limit=100):
+        """Get sample rows with invalid TCKN values - MySQL"""
+        try:
+            query = f'''
+                SELECT * 
+                FROM `{schema}`.`{table}`
+                WHERE `{column}` IS NOT NULL
+                AND is_valid_tckn(`{column}`) = FALSE
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching TCKN violations: {str(e)}")
+
+    def get_date_logic_violation_count(self, schema, table, start_date_col, end_date_col):
+        """MySQL: Count rows where start_date >= end_date"""
+        try:
+            query = f'''
+                SELECT COUNT(*) 
+                FROM `{schema}`.`{table}`
+                WHERE `{start_date_col}` IS NOT NULL
+                AND `{end_date_col}` IS NOT NULL
+                AND `{start_date_col}` >= `{end_date_col}`
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"MySQL error counting date logic violations: {str(e)}")
+
+    def get_date_logic_violations(self, schema, table, start_date_col, end_date_col, limit=100):
+        """MySQL: Get sample rows where start_date >= end_date"""
+        try:
+            query = f'''
+                SELECT * 
+                FROM `{schema}`.`{table}`
+                WHERE `{start_date_col}` IS NOT NULL
+                AND `{end_date_col}` IS NOT NULL
+                AND `{start_date_col}` >= `{end_date_col}`
+                LIMIT {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"MySQL error fetching date logic violations: {str(e)}")
+        
+    def get_text_column_date_formats_mysql(self, schema, table, column_name, limit=1000):
+        try:
+            query = f"""
+                SELECT *, 
+
+                    CASE
+                        WHEN `{column_name}` REGEXP '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$' THEN 'DD.MM.YYYY'
+                        WHEN `{column_name}` REGEXP '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$' THEN 'YYYY-MM-DD'
+                        WHEN `{column_name}` REGEXP '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$' THEN 'MM/DD/YYYY'
+                        WHEN `{column_name}` REGEXP '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$' THEN 'DD/MM/YYYY'
+                        WHEN `{column_name}` REGEXP '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$' THEN 'YYYY.MM.DD'
+                        ELSE 'Unknown'
+                    END AS format,
+
+                    CASE
+                        WHEN STR_TO_DATE({column_name}, '%d.%m.%Y') IS NOT NULL THEN 1
+                        WHEN STR_TO_DATE({column_name}, '%Y-%m-%d') IS NOT NULL THEN 1
+                        WHEN STR_TO_DATE({column_name}, '%m/%d/%Y') IS NOT NULL THEN 1
+                        WHEN STR_TO_DATE({column_name}, '%d/%m/%Y') IS NOT NULL THEN 1
+                        WHEN STR_TO_DATE({column_name}, '%Y.%m.%d') IS NOT NULL THEN 1
+                        ELSE 0
+                    END AS is_valid,
+
+                    COALESCE(
+                        STR_TO_DATE({column_name}, '%d.%m.%Y'),
+                        STR_TO_DATE({column_name}, '%Y-%m-%d'),
+                        STR_TO_DATE({column_name}, '%m/%d/%Y'),
+                        STR_TO_DATE({column_name}, '%d/%m/%Y'),
+                        STR_TO_DATE({column_name}, '%Y.%m.%d')
+                    ) AS parsed_date
+
+                FROM `{schema}`.`{table}`
+                WHERE `{column_name}` IS NOT NULL
+                LIMIT {limit};
+            """
+            self.cursor.execute(query)
+            columns = [desc[0] for desc in self.cursor.description]
+            rows = self.cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
+
+        except Exception as e:
+            raise Exception(f"MySQL error fetching date formats: {str(e)}")
+
+
     
 
 import logging
@@ -2523,7 +2985,7 @@ class OracleConnector(DatabaseConnector):
         """Get sample data from a table"""
         try:
             query = f'SELECT * FROM "{schema}"."{table}" WHERE ROWNUM <= {limit}'
-            print("burasi calisiyor")
+
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except Exception as e:
@@ -2973,4 +3435,138 @@ class OracleConnector(DatabaseConnector):
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Error fetching positive value violations: {str(e)}")
+        
+    def is_valid_tckn(self, tckn):
+        """Check if a single TCKN value is valid using the same logic as your PostgreSQL function"""
+        if not tckn or not isinstance(tckn, str) or not tckn.isdigit() or len(tckn) != 11:
+            return False
+        
+        if tckn[0] == '0':
+            return False
+        
+        digits = [int(d) for d in tckn]
+        
+        # Validate 10th digit
+        odd_sum = digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
+        even_sum = digits[1] + digits[3] + digits[5] + digits[7]
+        tenth = ((odd_sum * 7) - even_sum) % 10
+        if digits[9] != tenth:
+            return False
+        
+        # Validate 11th digit
+        eleventh = sum(digits[:10]) % 10
+        if digits[10] != eleventh:
+            return False
+        
+        return True
+    
+    def get_tckn_violation_count(self, schema, table, column):
+
+        try:
+            query = f'''
+                SELECT COUNT(*) 
+                FROM {schema}.{table}
+                WHERE {column} IS NOT NULL
+                AND is_valid_tckn({column}) = 0
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Error counting TCKN violations: {str(e)}")
+
+    def get_tckn_violations(self, schema, table, column, limit=100):
+        """Get sample rows with invalid TCKN values - Oracle"""
+        try:
+            query = f'''
+                SELECT * FROM (
+                    SELECT a.*, ROWNUM as rn 
+                    FROM {schema}.{table} a
+                    WHERE {column} IS NOT NULL
+                    AND is_valid_tckn({column}) = 0
+                    AND ROWNUM <= {limit}
+                )
+                WHERE rn <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Error fetching TCKN violations: {str(e)}")
+
+    def get_date_logic_violation_count(self, schema, table, start_date_col, end_date_col):
+        """Oracle: Count rows where start_date >= end_date"""
+        try:
+            query = f'''
+                SELECT COUNT(*) 
+                FROM "{schema}"."{table}"
+                WHERE "{start_date_col}" IS NOT NULL
+                AND "{end_date_col}" IS NOT NULL
+                AND "{start_date_col}" >= "{end_date_col}"
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchone()[0]
+        except Exception as e:
+            raise Exception(f"Oracle error counting date logic violations: {str(e)}")
+
+    def get_date_logic_violations(self, schema, table, start_date_col, end_date_col, limit=100):
+        """Oracle: Get sample rows where start_date >= end_date"""
+        try:
+            query = f'''
+                SELECT * 
+                FROM "{schema}"."{table}"
+                WHERE "{start_date_col}" IS NOT NULL
+                AND "{end_date_col}" IS NOT NULL
+                AND "{start_date_col}" >= "{end_date_col}"
+                AND ROWNUM <= {limit}
+            '''
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            raise Exception(f"Oracle error fetching date logic violations: {str(e)}")
+        
+    def get_text_column_date_formats_oracle(self, schema, table, column_name, limit=1000):
+        try:
+            query = f"""
+                SELECT *,
+
+                    CASE
+                        WHEN REGEXP_LIKE({column_name}, '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$') THEN 'DD.MM.YYYY'
+                        WHEN REGEXP_LIKE({column_name}, '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$') THEN 'YYYY-MM-DD'
+                        WHEN REGEXP_LIKE({column_name}, '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$') THEN 'MM/DD/YYYY'
+                        WHEN REGEXP_LIKE({column_name}, '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$') THEN 'DD/MM/YYYY'
+                        WHEN REGEXP_LIKE({column_name}, '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$') THEN 'YYYY.MM.DD'
+                        ELSE 'Unknown'
+                    END AS format,
+
+                    CASE
+                        WHEN TO_DATE({column_name}, 'DD.MM.YYYY') IS NOT NULL THEN 1
+                        WHEN TO_DATE({column_name}, 'YYYY-MM-DD') IS NOT NULL THEN 1
+                        WHEN TO_DATE({column_name}, 'MM/DD/YYYY') IS NOT NULL THEN 1
+                        WHEN TO_DATE({column_name}, 'DD/MM/YYYY') IS NOT NULL THEN 1
+                        WHEN TO_DATE({column_name}, 'YYYY.MM.DD') IS NOT NULL THEN 1
+                        ELSE 0
+                    END AS is_valid,
+
+                    COALESCE(
+                        CASE WHEN REGEXP_LIKE({column_name}, '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$') THEN TO_DATE({column_name}, 'DD.MM.YYYY') END,
+                        CASE WHEN REGEXP_LIKE({column_name}, '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$') THEN TO_DATE({column_name}, 'YYYY-MM-DD') END,
+                        CASE WHEN REGEXP_LIKE({column_name}, '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$') THEN TO_DATE({column_name}, 'MM/DD/YYYY') END,
+                        CASE WHEN REGEXP_LIKE({column_name}, '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$') THEN TO_DATE({column_name}, 'DD/MM/YYYY') END,
+                        CASE WHEN REGEXP_LIKE({column_name}, '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$') THEN TO_DATE({column_name}, 'YYYY.MM.DD') END
+                    ) AS parsed_date
+
+                FROM "{schema}"."{table}"
+                WHERE {column_name} IS NOT NULL
+                AND ROWNUM <= {limit}
+            """
+            self.cursor.execute(query)
+            columns = [desc[0] for desc in self.cursor.description]
+            rows = self.cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
+
+        except Exception as e:
+            raise Exception(f"Oracle error fetching date formats: {str(e)}")
+
+
+
+
 

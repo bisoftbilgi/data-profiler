@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 from database.utils import load_db_config, check_connection
+from collections import Counter
 
 PASS_ICON = "\u2705"  # ✅
 FAIL_ICON = "\u274C"  # ❌
@@ -19,7 +20,10 @@ def get_cached_columns(_connector, schema, table):
 def get_all_cached_tables_and_views(_connector, schema):
     return _connector.get_all_tables_and_views(schema)
 
-
+def get_column_params(custom_test_params, col_name, param_name, default=None):
+    """Safely get column-specific parameters"""
+    col_params = custom_test_params.get(col_name, {})
+    return col_params.get(param_name, default)
 
 
 def get_available_tests(column_info):
@@ -38,18 +42,14 @@ def get_available_tests(column_info):
         'range_check': {
             'name': 'Min-Max Range Check',
             'description': 'Check values are within min/max range for numeric columns',
-            'available_for': ['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'double', 'real', 'number']
+            'available_for': ['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'double', 'real', 'number','double precision']
         },
         'length_check': {
             'name': 'String Length Check',
             'description': 'Check string length range',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2']
+            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
         },
-        'datetime_check': {
-            'name': 'Datetime Format Check',
-            'description': 'Check if values are valid datetime',
-            'available_for': ['date', 'datetime', 'timestamp', 'timestamp(6)']
-        },
+    
         'letter_check': {
             'name': 'Letter Not to be Present',
             'description': 'Check for letters in the column',
@@ -63,22 +63,22 @@ def get_available_tests(column_info):
         'allowed_values': {
             'name': 'Value must be in allowed list',
             'description': 'Check if value is in allowed list',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2']
+            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
         },
         'eng_numeric_format': {
             'name': 'ENG Numeric Format',
             'description': 'Check if numeric values use dot (.) as decimal separator',
-            'available_for': ['decimal', 'numeric', 'float', 'double', 'real', 'number']
+            'available_for': ['decimal', 'numeric', 'float', 'double', 'real', 'number','double precision']
         },
         'tr_numeric_format': {
             'name': 'TR Numeric Format',
             'description': 'Check if numeric values use comma (,) as decimal separator',
-            'available_for': ['decimal', 'numeric', 'float', 'double', 'real', 'number']
+            'available_for': ['decimal', 'numeric', 'float', 'double', 'real', 'number','double precision']
         },
         'case_consistency': {
             'name': 'Case Consistency Check',
             'description': 'Check if all strings follow same casing (upper/lower)',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2']
+            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
         },
         'future_date': {
             'name': 'Future Date Check',
@@ -93,32 +93,48 @@ def get_available_tests(column_info):
         'no_special_chars': {
             'name': 'No Special Characters',
             'description': "Ensure values don't contain unwanted symbols",
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2']
+            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
         },
         'email_format': {
             'name': 'Email Format Check',
             'description': 'Full email validation using regex',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2']
+            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
         },
         'regex_pattern': {
             'name': 'Regex Pattern Match',
             'description': 'Custom regular expression validation',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2']
+            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
         },
             'positive_value': {
             'name': 'Positive Value Check',
             'description': 'Ensure values are non-negative or strictly positive',
-            'available_for': ['decimal', 'numeric', 'float', 'double', 'int', 'bigint', 'smallint', 'tinyint', 'real', 'number']
-        }
+            'available_for': ['decimal', 'numeric', 'float', 'double', 'int', 'bigint', 'smallint', 'tinyint', 'real', 'number', 'double precision']
+        },
+        'tckn_check': {
+            'name': 'TCKN Check',
+            'description': 'Check if TCKN is valid',
+            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2', 'character varying']
+        },
+        'date_check': {
+            'name': 'Date Format Check',
+            'description': 'Check if values are valid date',
+            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
+        },
+        'date_logic_check': {
+            'name': 'Date Logic Check',
+            'description': 'Check if two date columns are valid within each other',
+            'available_for': ['date', 'datetime', 'timestamp', 'timestamp(6)', 'timestamp(6)(11)']
+                }
     }
 
 def create_schema_for_column(column_info, selected_tests, custom_test_params=None):
     return None
 
-def run_quality_tests(connector, schema: str, table: str, selected_columns, selected_tests, custom_test_params=None):
+def run_quality_tests(connector, schema: str, table: str, column_test_map, custom_test_params=None):
+
     st.subheader("Running Data Quality Checks")
     columns = get_cached_columns(connector, schema, table)
-    selected_columns_info = [col for col in columns if col[0] in selected_columns]
+    selected_columns_info = [col for col in columns if col[0] in column_test_map.keys()]
 
     table_analysis = get_cached_table_analysis(connector, schema, table)
     total_rows = table_analysis.get('row_count', 0)
@@ -127,6 +143,7 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
     metrics = []
     for col in selected_columns_info:
         col_name, data_type = col[0], col[1].lower()
+        tests_for_column = column_test_map.get(col_name, [])
         null_count = distinct_count = letter_count = number_count = invalid_datetime_count = None
         null_pass = distinct_pass = letter_pass = number_pass = datetime_pass = None
         range_stats = length_stats = None
@@ -141,12 +158,19 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
         positive_value_pass = None
         invalid_datetime_count = None
         datetime_pass = None
+        tckn_check_violation_count = None
+        tckn_check_pass = None
+        debug_mode = True
+        date_violation_count = None
+        date_check_pass = None
+        date_logic_violation_count = None
+        date_logic_check_pass = None
 
-        print(data_type)
+
 
 
         try:
-            if 'null_check' in selected_tests:
+            if 'null_check' in tests_for_column:
                 null_count = None
                 null_count = connector.get_null_count(schema, table, col_name)
                 
@@ -159,7 +183,7 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             null_count = None
 
         try:
-            if 'distinct_check' in selected_tests:
+            if 'distinct_check' in tests_for_column:
                 distinct_count = connector.get_distinct_count(schema, table, col_name) 
                 if distinct_count==total_rows:
                     distinct_pass = PASS_ICON
@@ -170,10 +194,10 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             distinct_count = None
 
         try:
-            if 'range_check' in selected_tests and data_type in ['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'double', 'real','number']:
+            if 'range_check' in tests_for_column and data_type in ['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'double', 'real','number']:
                 range_stats = connector.get_min_max_range(schema, table, col_name)
-                user_min = custom_test_params.get('range_check_min')
-                user_max = custom_test_params.get('range_check_max')
+                user_min = get_column_params(custom_test_params, col_name, 'range_check_min')
+                user_max = get_column_params(custom_test_params, col_name, 'range_check_max')
                 range_pass = None
                 if user_min is not None and user_max is not None and range_stats is not None:
                     passed = user_min <= range_stats.get("min", 0) and range_stats.get("max", 0) <= user_max
@@ -190,10 +214,10 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             range_pass = None
 
         try:
-            if 'length_check' in selected_tests and data_type in ['varchar', 'char', 'nvarchar', 'nchar', 'text']:
+            if 'length_check' in tests_for_column:
                 length_stats = connector.get_char_length_range(schema, table, col_name)
-                user_min = custom_test_params.get('length_check_min')
-                user_max = custom_test_params.get('length_check_max')
+                user_min = get_column_params(custom_test_params, col_name, 'length_check_min')
+                user_max = get_column_params(custom_test_params, col_name, 'length_check_max')
                 length_pass = None
                 if user_min is not None and user_max is not None and length_stats is not None:
                     passed = user_min <= length_stats.get("min_length", 0) and length_stats.get("max_length", 0) <= user_max
@@ -208,28 +232,10 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
         except:
             length_stats = None
 
-        try:
-            if 'datetime_check' in selected_tests:
-                datetime_check_regex = custom_test_params.get('datetime_check_regex')
-                datetime_check_format = custom_test_params.get('datetime_check')
-                print("datettime_check_format", datetime_check_format)
-                invalid_datetime_count = connector.get_invalid_datetime_count(schema, table, col_name, datetime_check_format, datetime_check_regex)
-                print("invalid_datetime_count", invalid_datetime_count)
-                
-                if invalid_datetime_count == 0:
-                    
-                    datetime_pass = PASS_ICON
-                else:
-                    violated_rows_by_column[(col_name, 'datetime_check')] = connector.get_invalid_datetime_violations(schema, table, col_name, datetime_check_format, datetime_check_regex)
-                    datetime_pass = FAIL_ICON
-            else:
-                invalid_datetime_count = None
-                datetime_pass = None
-        except:
-            invalid_datetime_count = None
         
         try:
-            if 'letter_check' in selected_tests:
+            if 'letter_check' in tests_for_column:
+                
                 letter_count = connector.get_letter_count(schema, table, col_name)
                 letter_pass = None
                 if letter_count == 0:
@@ -245,7 +251,7 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             letter_pass = f'❌ ({str(e)})'
 
         try:
-            if 'number_check' in selected_tests:
+            if 'number_check' in tests_for_column:
                 number_count = connector.get_number_count(schema, table, col_name)
                 number_pass = None
                 if number_count == 0:
@@ -262,8 +268,8 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             number_pass = None
 
         try:
-            if 'allowed_values' in selected_tests:
-                allowed_values_str = custom_test_params.get('allowed_values_str')
+            if 'allowed_values' in tests_for_column:
+                allowed_values_str = get_column_params(custom_test_params, col_name, 'allowed_values_str')
                 allowed_values_pass = None
                 if allowed_values_str:
                     allowed_values_list = [val.strip() for val in allowed_values_str.split(',')]
@@ -289,7 +295,7 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             allowed_values_pass = f"{FAIL_ICON} ({str(e)})"
 
         try:
-            if 'eng_numeric_format' in selected_tests:
+            if 'eng_numeric_format' in tests_for_column:
                 eng_numeric_format_violation_count = connector.get_eng_numeric_format_violation_count(schema, table, col_name)
                 eng_numeric_format_pass = None
                 if eng_numeric_format_violation_count == 0:
@@ -304,7 +310,7 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             eng_numeric_format_violation_count = None
             eng_numeric_format_pass = f"{FAIL_ICON} ({str(e)})"
         try:
-            if 'tr_numeric_format' in selected_tests:
+            if 'tr_numeric_format' in tests_for_column:
                 tr_numeric_format_violation_count = connector.get_tr_numeric_format_violation_count(schema, table, col_name)
                 tr_numeric_format_pass = None
                 if tr_numeric_format_violation_count == 0:
@@ -319,8 +325,9 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             tr_numeric_format_violation_count = None
             tr_numeric_format_pass = f"{FAIL_ICON} ({str(e)})"
         try:
-            if 'case_consistency' in selected_tests:
-                case_consistency = custom_test_params.get('case_consistency')
+            if 'case_consistency' in tests_for_column:
+                
+                case_consistency = get_column_params(custom_test_params, col_name, 'case_consistency')
                 case_inconsistency_count = connector.get_case_inconsistency_count(schema, table, col_name, case_consistency)
                 case_inconsistency_pass = None
                 if case_inconsistency_count == 0:
@@ -335,7 +342,7 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             case_inconsistency_count = None
             case_inconsistency_pass = f"{FAIL_ICON} ({str(e)})"
         try:
-            if 'future_date' in selected_tests:
+            if 'future_date' in tests_for_column:
                 future_date_violation_count = connector.get_future_date_violation_count(schema, table, col_name)
                 future_date_pass = None
                 if future_date_violation_count == 0:
@@ -350,9 +357,9 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             future_date_violation_count = None
             future_date_pass = f"{FAIL_ICON} ({str(e)})"
         try:
-            if 'date_range' in selected_tests:
-                start_date = custom_test_params.get('start_date')
-                end_date = custom_test_params.get('end_date')
+            if 'date_range' in tests_for_column:
+                start_date = get_column_params(custom_test_params, col_name, 'start_date')
+                end_date = get_column_params(custom_test_params, col_name, 'end_date')
                 date_range_violation_count = connector.get_date_range_violation_count(schema, table, col_name, start_date, end_date)
                 date_range_pass = None
                 if date_range_violation_count == 0:
@@ -367,8 +374,8 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             date_range_violation_count = None
             date_range_pass = f"{FAIL_ICON} ({str(e)})"
         try:
-            if 'no_special_chars' in selected_tests:
-                allowed_pattern = custom_test_params.get('allowed_pattern')
+            if 'no_special_chars' in tests_for_column:
+                allowed_pattern = get_column_params(custom_test_params, col_name, 'allowed_pattern')
                 special_char_violation_count = connector.get_special_char_violation_count(schema, table, col_name, allowed_pattern)
                 special_char_pass = None
                 if special_char_violation_count == 0:
@@ -384,7 +391,7 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             special_char_pass = f"{FAIL_ICON} ({str(e)})"
 
         try:
-            if 'email_format' in selected_tests:
+            if 'email_format' in tests_for_column:
                 email_format_violation_count = connector.get_email_format_violation_count(schema, table, col_name)
                 email_format_pass = None
                 if email_format_violation_count == 0:
@@ -400,9 +407,9 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             email_format_pass = f"{FAIL_ICON} ({str(e)})"
 
         try:
-            if 'regex_pattern' in selected_tests:
-                regex_pattern = custom_test_params.get('regex_pattern')
-                print(" try icinde regex_pattern", regex_pattern)
+            if 'regex_pattern' in tests_for_column:
+
+                regex_pattern = get_column_params(custom_test_params, col_name, 'regex_pattern')
                 regex_pattern_violation_count = connector.get_regex_pattern_violation_count(schema, table, col_name, regex_pattern)
                 
                 if regex_pattern_violation_count == 0:
@@ -417,8 +424,9 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             regex_pattern_violation_count = None
 
         try:
-            if 'positive_value' in selected_tests:
-                strict = custom_test_params.get('strict')
+            if 'positive_value' in tests_for_column:
+
+                strict = get_column_params(custom_test_params, col_name, 'strict')
                 positive_value_violation_count = connector.get_positive_value_violation_count(schema, table, col_name, strict)
                 positive_value_pass = None
                 if positive_value_violation_count == 0:
@@ -432,6 +440,87 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
         except Exception as e:
             positive_value_violation_count = None
             positive_value_pass = f"{FAIL_ICON} ({str(e)})"
+        # In your validation mechanism
+        try:
+            if 'tckn_check' in tests_for_column:
+                # First get the violation count
+                tckn_check_violation_count = connector.get_tckn_violation_count(schema, table, col_name)
+                tckn_check_pass = None
+                # Determine pass/fail status
+                tckn_check_pass = PASS_ICON 
+                
+                if tckn_check_violation_count == 0:
+                    tckn_check_pass = PASS_ICON
+                        # Get some valid samples for debugging
+                else:
+                    # Get sample violations for display
+                    tckn_check_pass = FAIL_ICON 
+                    violated_rows_by_column[(col_name, 'tckn_check')] = connector.get_tckn_violations(
+                        schema, table, col_name, 100
+                    )
+                
+
+        except Exception as e:
+            tckn_check_violation_count = None
+            tckn_check_pass = f"{FAIL_ICON} ({str(e)})"
+            st.error(f"TCKN validation error: {str(e)}")
+
+        try:
+            if 'date_check' in tests_for_column:
+                # Get all parsed results (each row contains: raw value, format, is_valid, parsed_date)
+                parsed_rows = connector.get_text_column_date_formats(schema, table, col_name)
+    
+                # Count how many rows are invalid
+                date_violation_count = sum(1 for row in parsed_rows if not row['is_valid'])
+                print(f"[DEBUG] Date violation count: {date_violation_count}")
+
+                if date_violation_count == 0:
+                    date_check_pass = PASS_ICON
+                    print(f"[DEBUG] Date check pass: {date_check_pass}")
+                                        # Store failed rows in debug map
+
+                else:
+                    date_check_pass = FAIL_ICON
+                    print(f"[DEBUG] Date check pass: {date_check_pass}")
+
+                    # Store failed rows in debug map
+                    violated_rows_by_column[(col_name, 'date_check')] = [
+                        row for row in parsed_rows if not row['is_valid']
+                    ]
+
+                format_counts = Counter(row['format'] for row in parsed_rows)
+                format_df = pd.DataFrame(format_counts.items(), columns=['Format', 'Count']).sort_values(by='Count', ascending=False)
+                st.markdown(f"**Date Format Distribution for `{col_name}`**")
+                st.dataframe(format_df, use_container_width=True)
+
+        except Exception as e:
+            date_violation_count = None
+            date_check_pass = f"{FAIL_ICON} ({str(e)})"
+            st.write(f"[DEBUG] throwing exception Date check pass: {date_check_pass}")
+
+
+        try:
+            if 'date_logic_check' in tests_for_column:
+                start_date_logic = get_column_params(custom_test_params, col_name, 'start_date_logic')
+                end_date_logic = get_column_params(custom_test_params, col_name, 'end_date_logic')
+                date_logic_violation_count = connector.get_date_logic_violation_count(schema, table, start_date_logic, end_date_logic)
+                print(f"[DEBUG] Date violation count: {date_logic_violation_count}")
+                
+                if date_logic_violation_count == 0:
+                    date_logic_check_pass = PASS_ICON
+                    print(f"[DEBUG] Date check pass: {date_logic_check_pass}")
+                else:
+                    
+                    violated_rows_by_column[(col_name, 'date_check')] = connector.get_date_logic_violations(
+                        schema, table, start_date_logic, end_date_logic
+                    )
+                    date_logic_check_pass = FAIL_ICON
+                    print(f"[DEBUG] Date check pass: {date_logic_check_pass}")
+                    
+        except Exception as e:
+            date_violation_count = None
+            date_logic_check_pass = f"{FAIL_ICON} ({str(e)})"
+            st.write(f"[DEBUG] throwing exception Date check pass: {date_logic_check_pass}")
 
         metrics.append({
             'Column': col_name,
@@ -453,8 +542,10 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             'Datetime Pass': datetime_pass,
             'Letter Count': letter_count,
             'Letter Pass': letter_pass,
+            'Letter Violation %': (letter_count / total_rows * 100) if total_rows and letter_count is not None else None,
             'Number Count': number_count,
             'Number Pass': number_pass,
+            'Number Violation %': (number_count / total_rows * 100) if total_rows and number_count is not None else None,
             'Allowed Values Violation Count': allowed_values_violation_count,
             'Allowed Values Non Violation Count': allowed_values_non_violation_count,
             'Allowed Values Pass': allowed_values_pass,
@@ -475,53 +566,86 @@ def run_quality_tests(connector, schema: str, table: str, selected_columns, sele
             'Regex Pattern Violation Count': regex_pattern_violation_count,
             'Regex Pattern Pass': regex_pattern_pass,
             'Positive Value Violation Count': positive_value_violation_count,
-            'Positive Value Pass': positive_value_pass
+            'Positive Value Pass': positive_value_pass,
+            'TCKN Check Violation Count': tckn_check_violation_count,
+            'TCKN Check Pass': tckn_check_pass,
+            'Date Check Violation Count': date_violation_count,
+            'Date Check Pass': date_check_pass,
+            'Date Logic Violation Count': date_logic_violation_count,
+            'Date Logic Check Pass': date_logic_check_pass,
+            'ENG Numeric Format Violation %': (eng_numeric_format_violation_count / total_rows * 100) if total_rows and eng_numeric_format_violation_count is not None else None,
+            'TR Numeric Format Violation %': (tr_numeric_format_violation_count / total_rows * 100) if total_rows and tr_numeric_format_violation_count is not None else None,
+            'Case Inconsistency %': (case_inconsistency_count / total_rows * 100) if total_rows and case_inconsistency_count is not None else None,
+            'Future Date Violation %': (future_date_violation_count / total_rows * 100) if total_rows and future_date_violation_count is not None else None,
+            'Date Range Violation %': (date_range_violation_count / total_rows * 100) if total_rows and date_range_violation_count is not None else None,
+            'Special Char Violation %': (special_char_violation_count / total_rows * 100) if total_rows and special_char_violation_count is not None else None,
+            'Email Format Violation %': (email_format_violation_count / total_rows * 100) if total_rows and email_format_violation_count is not None else None,
+            'Regex Pattern Violation %': (regex_pattern_violation_count / total_rows * 100) if total_rows and regex_pattern_violation_count is not None else None,
+            'Positive Value Violation %': (positive_value_violation_count / total_rows * 100) if total_rows and positive_value_violation_count is not None else None,
+            'TCKN Check Violation %': (tckn_check_violation_count / total_rows * 100) if total_rows and tckn_check_violation_count is not None else None,
+            'Date Check Violation %': (date_violation_count / total_rows * 100) if total_rows and date_violation_count is not None else None,
+            'Date Logic Violation %': (date_logic_violation_count / total_rows * 100) if total_rows and date_logic_violation_count is not None else None,
+
         })
 
     df = pd.DataFrame(metrics)
     st.subheader("Validation Summary")
     display_cols = ['Column', 'Data Type']
-    if 'null_check' in selected_tests:
-        display_cols += ['Null Count', 'Null Pass', 'Null %']
-    if 'distinct_check' in selected_tests:
-        display_cols += ['Distinct Count', 'Distinct Pass', 'Distinct %']
-    if 'range_check' in selected_tests:
+
+    # Get all unique tests selected across all columns
+    all_selected_tests = set()
+    for tests in column_test_map.values():
+        all_selected_tests.update(tests)
+
+    if 'null_check' in all_selected_tests:
+        display_cols += ['Null Count', 'Null %', 'Null Pass']
+    if 'distinct_check' in all_selected_tests:
+        display_cols += ['Distinct Count', 'Distinct %', 'Distinct Pass']
+    if 'range_check' in all_selected_tests:
         display_cols += ['Min', 'Max', 'Range', 'Range Pass']
-    if 'length_check' in selected_tests:
+    if 'length_check' in all_selected_tests:
         display_cols += ['Min Length', 'Max Length', 'Length Pass']
-    if 'datetime_check' in selected_tests:
+    if 'datetime_check' in all_selected_tests:
         display_cols += ['Invalid Datetime Count', 'Datetime Pass']
-    if 'letter_check' in selected_tests:
-        display_cols += ['Letter Count', 'Letter Pass']
-    if 'number_check' in selected_tests:
-        display_cols += ['Number Count', 'Number Pass']
-    if 'allowed_values' in selected_tests:
-        display_cols += ['Allowed Values Violation Count', 'Allowed Values Non Violation Count', 'Allowed Values Pass']
-    if 'eng_numeric_format' in selected_tests:
-        display_cols += ['ENG Numeric Format Violation Count', 'ENG Numeric Format Pass']
-    if 'tr_numeric_format' in selected_tests:
-        display_cols += ['TR Numeric Format Violation Count', 'TR Numeric Format Pass']
-    if 'case_consistency' in selected_tests:
-        display_cols += ['Case Inconsistency Count', 'Case Inconsistency Pass']
-    if 'future_date' in selected_tests:
-        display_cols += ['Future Date Violation Count', 'Future Date Pass']
-    if 'date_range' in selected_tests:
-        display_cols += ['Date Range Violation Count', 'Date Range Pass']
-    if 'no_special_chars' in selected_tests:
-        display_cols += ['Special Char Violation Count', 'Special Char Pass']
-    if 'email_format' in selected_tests:
-        display_cols += ['Email Format Violation Count', 'Email Format Pass']
-    if 'regex_pattern' in selected_tests:
-        display_cols += ['Regex Pattern Violation Count', 'Regex Pattern Pass']
-    if 'positive_value' in selected_tests:
-        display_cols += ['Positive Value Violation Count', 'Positive Value Pass']
+    if 'letter_check' in all_selected_tests:
+        display_cols += ['Letter Count', 'Letter Pass','Letter Violation %']
+    if 'number_check' in all_selected_tests:
+        display_cols += ['Number Count', 'Number Pass','Number Violation %']
+    if 'allowed_values' in all_selected_tests:
+        display_cols += ['Allowed Values Violation Count', 'Allowed Values Violation %', 'Allowed Values Non Violation Count', 'Allowed Values Pass']
+    if 'eng_numeric_format' in all_selected_tests:
+        display_cols += ['ENG Numeric Format Violation Count', 'ENG Numeric Format Violation %', 'ENG Numeric Format Pass']
+    if 'tr_numeric_format' in all_selected_tests:
+        display_cols += ['TR Numeric Format Violation Count', 'TR Numeric Format Violation %', 'TR Numeric Format Pass']
+    if 'case_consistency' in all_selected_tests:
+        display_cols += ['Case Inconsistency Count', 'Case Inconsistency %', 'Case Inconsistency Pass']
+    if 'future_date' in all_selected_tests:
+        display_cols += ['Future Date Violation Count', 'Future Date Violation %', 'Future Date Pass']
+    if 'date_range' in all_selected_tests:
+        display_cols += ['Date Range Violation Count', 'Date Range Violation %', 'Date Range Pass']
+    if 'no_special_chars' in all_selected_tests:
+        display_cols += ['Special Char Violation Count', 'Special Char Violation %', 'Special Char Pass']
+    if 'email_format' in all_selected_tests:
+        display_cols += ['Email Format Violation Count', 'Email Format Violation %', 'Email Format Pass']
+    if 'regex_pattern' in all_selected_tests:
+        display_cols += ['Regex Pattern Violation Count', 'Regex Pattern Violation %', 'Regex Pattern Pass']
+    if 'positive_value' in all_selected_tests:
+        display_cols += ['Positive Value Violation Count', 'Positive Value Violation %', 'Positive Value Pass']
+    if 'tckn_check' in all_selected_tests:
+        display_cols += ['TCKN Check Violation Count', 'TCKN Check Violation %', 'TCKN Check Pass']
+    if 'date_check' in all_selected_tests:
+        display_cols += ['Date Check Violation Count', 'Date Check Violation %', 'Date Check Pass']
+    if 'date_logic_check' in all_selected_tests:
+        display_cols += ['Date Logic Violation Count', 'Date Logic Violation %', 'Date Logic Check Pass']
+
     st.dataframe(df[display_cols])
 
-    print("violated_rows_by_column calısıyor keys:", violated_rows_by_column.keys())
+
+
 
     if violated_rows_by_column:
         st.subheader("Violated Rows Preview")
-        print("violated_rows_by_column burada", violated_rows_by_column)
+
         for (col_name, test_name), rows in violated_rows_by_column.items():
             if rows:
                 st.markdown(f"**{col_name} – {test_name}**")
@@ -581,101 +705,157 @@ def show_quality_tests_page(connector, schema: str):
         st.error(f"Error retrieving sample data: {str(e)}")
     selected_columns = st.multiselect("Choose columns:", [col[0] for col in columns], default=[col[0] for col in columns])
 
-    all_tests = ['null_check', 'distinct_check', 'range_check', 'length_check', 'datetime_check', 'letter_check', 'number_check', 'allowed_values', 'eng_numeric_format', 'tr_numeric_format', 'case_consistency', 'future_date', 'date_range', 'no_special_chars', 'email_format', 'regex_pattern', 'positive_value']
-    selected_tests = []
+    all_tests = ['null_check', 'distinct_check', 'range_check', 'length_check', 'datetime_check', 
+             'letter_check', 'number_check', 'allowed_values', 'eng_numeric_format', 'tr_numeric_format', 
+             'case_consistency', 'future_date', 'date_range', 'no_special_chars', 'email_format', 
+             'regex_pattern', 'positive_value', 'tckn_check', 'date_check', 'date_logic_check']
+
+    column_test_map = {}  # Dict to store selected tests per column
     custom_test_params = {}
-    st.subheader("Select Tests to Run")
-    # Get the data type of the first selected column to filter applicable tests
+
+    st.subheader("Select Tests to Run for Each Column")
+
     if selected_columns:
-        selected_col_name = selected_columns[0]
-        selected_col_info = next((col for col in columns if col[0] == selected_col_name), None)
-        data_type = selected_col_info[1].lower() if selected_col_info else ''
-        print("veri tipi", data_type)
-        # Filter applicable tests
-        available_tests = {
-            key: val for key, val in get_available_tests(selected_col_info).items()
-            if val['available_for'] == 'all' or data_type in val['available_for']
-        }
+        for col_name in selected_columns:
+            custom_test_params[col_name] = {}
+            st.markdown(f"### 🧪 Tests for Column: `{col_name}`")
 
-        st.markdown("**Test Descriptions:**")
-        for key, val in available_tests.items():
-            st.markdown(f"- **{val['name']}**: {val['description']}")
-        st.markdown("---")
+            selected_col_info = next((col for col in columns if col[0] == col_name), None)
+            data_type = selected_col_info[1].lower() if selected_col_info else ''
 
-        for key, val in available_tests.items():
-            if st.checkbox(val['name'], key=f"{key}_checkbox"):
-                selected_tests.append(key)
+            # Get applicable tests for the column
+            available_tests = {
+                key: val for key, val in get_available_tests(selected_col_info).items()
+                if val['available_for'] == 'all' or data_type in val['available_for']
+            }
+
+            if not available_tests:
+                st.warning(f"No applicable tests found for column `{col_name}`.")
+                continue
+
+            # Show descriptions
+            with st.expander("Show Test Descriptions", expanded=False):
+                for key, val in available_tests.items():
+                    st.markdown(f"- **{val['name']}**: {val['description']}")
+
+            # Show checkboxes to select tests
+            selected_tests = []
+            for key, val in available_tests.items():
+                if st.checkbox(val['name'], key=f"{col_name}_{key}_checkbox"):
+                    selected_tests.append(key)
+
+            column_test_map[col_name] = selected_tests
+
+            if selected_tests:  # Only show if tests are selected for this column
+
+
+                if 'range_check' in selected_tests:
+                    st.markdown("**Range Check Settings:**")
+                    custom_test_params[col_name]['range_check_min'] = st.number_input(
+                        "Minimum acceptable value", 
+                        value=0.0,
+                        key=f"{col_name}_range_min"
+                    )
+                    custom_test_params[col_name]['range_check_max'] = st.number_input(
+                        "Maximum acceptable value", 
+                        value=100.0,
+                        key=f"{col_name}_range_max"
+                    )
+
+                if 'length_check' in selected_tests:
+                    st.markdown("**Length Check Settings:**")
+                    custom_test_params[col_name]['length_check_min'] = st.number_input(
+                        "Minimum acceptable length", 
+                        value=0,
+                        key=f"{col_name}_length_min"
+                    )
+                    custom_test_params[col_name]['length_check_max'] = st.number_input(
+                        "Maximum acceptable length", 
+                        value=100,
+                        key=f"{col_name}_length_max"
+                    )
+
+                if 'allowed_values' in selected_tests:
+                    custom_test_params[col_name]['allowed_values_str'] = st.text_input(
+                        "Allowed values (comma separated):", 
+                        value='',
+                        key=f"{col_name}_allowed_values"
+                    )
+
+                if 'case_consistency' in selected_tests:
+                    st.markdown("**Case Consistency Check Settings:**")
+                    custom_test_params[col_name]['case_consistency'] = st.selectbox(
+                        "Expected case:", 
+                        ['upper', 'lower'], 
+                        index=0,
+                        key=f"{col_name}_case_consistency"
+                    )
+
+
+                if 'date_range' in selected_tests:
+                    st.markdown("**Date Range Check Settings:**")
+                    custom_test_params[col_name]['start_date'] = st.date_input(
+                        "Start date", 
+                        value=datetime.now() - timedelta(days=30),
+                        key=f"{col_name}_start_date"
+                    )
+                    custom_test_params[col_name]['end_date'] = st.date_input(
+                        "End date", 
+                        value=datetime.now(),
+                        key=f"{col_name}_end_date"
+                    )
+
+                if 'no_special_chars' in selected_tests:
+                    st.markdown("**No Special Characters Check Settings:**")
+                    custom_test_params[col_name]['allowed_pattern'] = st.text_input(
+                        "Allowed pattern (e.g. '^[a-zA-Z0-9]+$'):", 
+                        value='^[a-zA-Z0-9]+$',
+                        key=f"{col_name}_allowed_pattern"
+                    )
+
+                if 'regex_pattern' in selected_tests:
+                    st.markdown("**Regex Pattern Check Settings:**")
+                    custom_test_params[col_name]['regex_pattern'] = st.text_input(
+                        "Regex pattern:", 
+                        value='',
+                        key=f"{col_name}_regex_pattern"
+                    )
+
+                if 'positive_value' in selected_tests:
+                    st.markdown("**Positive Value Check Settings:**")
+                    custom_test_params[col_name]['strict'] = st.checkbox(
+                        "Strict positive value check", 
+                        value=False,
+                        key=f"{col_name}_strict_positive"
+                    )
+
+                if 'date_logic_check' in selected_tests:
+                    st.markdown("**Date Logic Settings:**")
+                    
+                    date_columns = [col[0] for col in columns if 'date' in col[1].lower() or 'time' in col[1].lower()]
+                    selectable_columns = date_columns if date_columns else [col[0] for col in columns]
+                    
+                    custom_test_params[col_name]['start_date_logic'] = st.selectbox(
+                        "Select Start Date Column", 
+                        selectable_columns,
+                        key=f"{col_name}_start_date_col"
+                    )
+                    custom_test_params[col_name]['end_date_logic'] = st.selectbox(
+                        "Select End Date Column", 
+                        selectable_columns,
+                        key=f"{col_name}_end_date_col"
+                    )
     else:
-        st.info("Please select at least one column to view available tests.")
-
-    if 'range_check' in selected_tests:
-        st.markdown("**Range Check Settings:**")
-        custom_test_params['range_check_min'] = st.number_input("Minimum acceptable value", value=0.0)
-        custom_test_params['range_check_max'] = st.number_input("Maximum acceptable value", value=100.0)
-
-    if 'length_check' in selected_tests:
-        st.markdown("**Length Check Settings:**")
-        custom_test_params['length_check_min'] = st.number_input("Minimum acceptable length", value=0)
-        custom_test_params['length_check_max'] = st.number_input("Maximum acceptable length", value=100)
-
-    if 'datetime_check' in selected_tests:
-        st.markdown("**Datetime Check Settings:**")
-
-        # Format options and their corresponding regex patterns
-        format_options = {
-            'YYYY-MM-DD HH24:MI:SS': r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$',
-            'YYYY-MM-DD': r'^\d{4}-\d{2}-\d{2}$',
-            'DD/MM/YYYY': r'^\d{2}/\d{2}/\d{4}$',
-            'MM-DD-YYYY': r'^\d{2}-\d{2}-\d{4}$',
-            'YYYY.MM.DD': r'^\d{4}\.\d{2}\.\d{2}$',
-            'HH24:MI:SS': r'^\d{2}:\d{2}:\d{2}$',
-            'YYYY-MM-DD HH24:MI:SS.FF3': r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$',
-            'YYYY-MM-DD HH24:MI:SS.FF': r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{2}$',
-            'YYYY-MM-DD HH24:MI:SS.FF6': r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$'
-        }
-
-        # User selects from dropdown
-        selected_format = st.selectbox(
-            "Choose expected datetime format:",
-            options=list(format_options.keys()),
-            index=0  # default to first format
-        )
-
-        # Store Oracle format string for display or metadata
-        custom_test_params['datetime_check'] = selected_format
-
-        # Get corresponding regex string for backend use
-        custom_test_params['datetime_check_regex'] = format_options[selected_format]
-
-
-    if 'allowed_values' in selected_tests:
-        custom_test_params['allowed_values_str'] = st.text_input("Allowed values (comma separated):", value='')
-
-    if 'case_consistency' in selected_tests:
-        st.markdown("**Case Consistency Check Settings:**")
-        custom_test_params['case_consistency'] = st.selectbox("Expected case:", ['upper', 'lower'], index=0)
-
-    if 'future_date' in selected_tests:
-        st.markdown("**Future Date Check Settings:**")
-        custom_test_params['future_date'] = st.selectbox("Future date check:", ['future', 'not_future'], index=0)
-
-    if 'date_range' in selected_tests:
-        st.markdown("**Date Range Check Settings:**")
-        custom_test_params['start_date'] = st.date_input("Start date", value=datetime.now() - timedelta(days=30))
-        custom_test_params['end_date'] = st.date_input("End date", value=datetime.now())
-
-    if 'no_special_chars' in selected_tests:
-        st.markdown("**No Special Characters Check Settings:**")
-        custom_test_params['allowed_pattern'] = st.text_input("Allowed pattern (e.g. '^[a-zA-Z0-9]+$'):", value='^[a-zA-Z0-9]+$')
-
-
-    if 'regex_pattern' in selected_tests:
-        st.markdown("**Regex Pattern Check Settings:**")
-        custom_test_params['regex_pattern'] = st.text_input("Regex pattern:", value='')
-
-    if 'positive_value' in selected_tests:
-        st.markdown("**Positive Value Check Settings:**")
-        custom_test_params['strict'] = st.checkbox("Strict positive value check", value=False)
+        st.info("Please select at least one column to view and assign tests.")
 
     if st.button("Run Quality Tests"):
-        run_quality_tests(connector, schema, selected_table, selected_columns, selected_tests, custom_test_params=custom_test_params)
+        run_quality_tests(
+            connector=connector,
+            schema=schema,
+            table=selected_table,
+            column_test_map=column_test_map,
+            custom_test_params=custom_test_params
+        )
+
+
+
