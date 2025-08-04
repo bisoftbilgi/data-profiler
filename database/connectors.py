@@ -768,89 +768,109 @@ class PostgresConnector(DatabaseConnector):
             raise Exception(f"Error getting min-max range: {str(e)}")
 
 
-        
-    def is_valid_tckn(self, tckn):
-        """Check if a single TCKN value is valid using the same logic as your PostgreSQL function"""
-        if not tckn or not isinstance(tckn, str) or not tckn.isdigit() or len(tckn) != 11:
-            return False
-        
-        if tckn[0] == '0':
-            return False
-        
-        digits = [int(d) for d in tckn]
-        
-        # Validate 10th digit
-        odd_sum = digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
-        even_sum = digits[1] + digits[3] + digits[5] + digits[7]
-        tenth = ((odd_sum * 7) - even_sum) % 10
-        if digits[9] != tenth:
-            return False
-        
-        # Validate 11th digit
-        eleventh = sum(digits[:10]) % 10
-        if digits[10] != eleventh:
-            return False
-        
-        return True
+
 
     def get_tckn_violation_count(self, schema, table, column):
-        """Count all invalid TCKN values in the column"""
+        """Count all invalid TCKN values in the column (pure SQL)"""
         try:
-            # Get all non-null values first
             query = f'''
-                SELECT "{column}" FROM "{schema}"."{table}"
+                SELECT COUNT(*) FROM "{schema}"."{table}"
                 WHERE "{column}" IS NOT NULL
+                  AND NOT (
+                    LENGTH("{column}") = 11
+                    AND "{column}" ~ '^[0-9]+$'
+                    AND SUBSTRING("{column}", 1, 1) <> '0'
+                    AND (
+                        (
+                            (
+                                CAST(SUBSTRING("{column}",1,1) AS integer) +
+                                CAST(SUBSTRING("{column}",3,1) AS integer) +
+                                CAST(SUBSTRING("{column}",5,1) AS integer) +
+                                CAST(SUBSTRING("{column}",7,1) AS integer) +
+                                CAST(SUBSTRING("{column}",9,1) AS integer)
+                            ) * 7
+                            -
+                            (
+                                CAST(SUBSTRING("{column}",2,1) AS integer) +
+                                CAST(SUBSTRING("{column}",4,1) AS integer) +
+                                CAST(SUBSTRING("{column}",6,1) AS integer) +
+                                CAST(SUBSTRING("{column}",8,1) AS integer)
+                            )
+                        ) % 10
+                    ) = CAST(SUBSTRING("{column}",10,1) AS integer)
+                    AND (
+                        (
+                            CAST(SUBSTRING("{column}",1,1) AS integer) +
+                            CAST(SUBSTRING("{column}",2,1) AS integer) +
+                            CAST(SUBSTRING("{column}",3,1) AS integer) +
+                            CAST(SUBSTRING("{column}",4,1) AS integer) +
+                            CAST(SUBSTRING("{column}",5,1) AS integer) +
+                            CAST(SUBSTRING("{column}",6,1) AS integer) +
+                            CAST(SUBSTRING("{column}",7,1) AS integer) +
+                            CAST(SUBSTRING("{column}",8,1) AS integer) +
+                            CAST(SUBSTRING("{column}",9,1) AS integer) +
+                            CAST(SUBSTRING("{column}",10,1) AS integer)
+                        ) % 10
+                    ) = CAST(SUBSTRING("{column}",11,1) AS integer)
+                  )
             '''
             self.cursor.execute(query)
-            rows = self.cursor.fetchall()
-            
-            # Count violations
-            violation_count = 0
-            for row in rows:
-                tckn = str(row[0])  # First (and only) column in our query
-                if not self.is_valid_tckn(tckn):
-                    violation_count += 1
-            
-            return violation_count
-            
+            count = self.cursor.fetchone()[0]
+            return count
         except Exception as e:
             raise Exception(f"Error counting TCKN violations: {str(e)}")
 
     def get_tckn_violations(self, schema, table, column, limit=100):
-        """Get sample rows with invalid TCKN values"""
+        """Get sample rows with invalid TCKN values (pure SQL)"""
         try:
-            # Get all non-null values first
             query = f'''
                 SELECT * FROM "{schema}"."{table}"
                 WHERE "{column}" IS NOT NULL
-                LIMIT {limit}  
+                  AND NOT (
+                    LENGTH("{column}") = 11
+                    AND "{column}" ~ '^[0-9]+$'
+                    AND SUBSTRING("{column}", 1, 1) <> '0'
+                    AND (
+                        (
+                            (
+                                CAST(SUBSTRING("{column}",1,1) AS integer) +
+                                CAST(SUBSTRING("{column}",3,1) AS integer) +
+                                CAST(SUBSTRING("{column}",5,1) AS integer) +
+                                CAST(SUBSTRING("{column}",7,1) AS integer) +
+                                CAST(SUBSTRING("{column}",9,1) AS integer)
+                            ) * 7
+                            -
+                            (
+                                CAST(SUBSTRING("{column}",2,1) AS integer) +
+                                CAST(SUBSTRING("{column}",4,1) AS integer) +
+                                CAST(SUBSTRING("{column}",6,1) AS integer) +
+                                CAST(SUBSTRING("{column}",8,1) AS integer)
+                            )
+                        ) % 10
+                    ) = CAST(SUBSTRING("{column}",10,1) AS integer)
+                    AND (
+                        (
+                            CAST(SUBSTRING("{column}",1,1) AS integer) +
+                            CAST(SUBSTRING("{column}",2,1) AS integer) +
+                            CAST(SUBSTRING("{column}",3,1) AS integer) +
+                            CAST(SUBSTRING("{column}",4,1) AS integer) +
+                            CAST(SUBSTRING("{column}",5,1) AS integer) +
+                            CAST(SUBSTRING("{column}",6,1) AS integer) +
+                            CAST(SUBSTRING("{column}",7,1) AS integer) +
+                            CAST(SUBSTRING("{column}",8,1) AS integer) +
+                            CAST(SUBSTRING("{column}",9,1) AS integer) +
+                            CAST(SUBSTRING("{column}",10,1) AS integer)
+                        ) % 10
+                    ) = CAST(SUBSTRING("{column}",11,1) AS integer)
+                  )
+                LIMIT {limit}
             '''
             self.cursor.execute(query)
             rows = self.cursor.fetchall()
-            
-            # Find column index - CORRECTED VERSION
-            col_index = next(
-                (i for i, col in enumerate(self.cursor.description) 
-                if col.name.lower() == column.lower()
-            ))
-            
-            # Collect violations
-            violations = []
-            for row in rows:
-                try:
-                    tckn = str(row[col_index]) if row[col_index] is not None else ''
-                    if not self.is_valid_tckn(tckn):
-                        violations.append(row)
-                        if len(violations) >= limit:
-                            break
-                except (IndexError, TypeError):
-                    continue
-            
-            return violations
-            
+            return rows
         except Exception as e:
             raise Exception(f"Error fetching TCKN violations: {str(e)}")
-        
+
     def get_date_logic_violation_count(self, schema, table, start_date_col, end_date_col):
         """Count rows where start_date >= end_date"""
         try:
@@ -928,8 +948,35 @@ class PostgresConnector(DatabaseConnector):
         except Exception as e:
             raise Exception(f"Error fetching date logic violations: {str(e)}")
 
+    def get_date_format_violation_count(self, schema, table, column_name, date_format_regex, limit=100):
+        try:
+            query = f'''
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE NOT "{column_name}" ~ %s
+            '''
+            self.cursor.execute(query, (date_format_regex,))
+
+            print("DEBUG SQL preview:")
+            print(query.replace("%s", f"'{date_format_regex}'"))  # Sadece görsel amaçlı
+
+            return self.cursor.fetchone()[0]
 
 
+
+        except Exception as e:
+            raise Exception(f"Error counting date format violation count: {str(e)}")
+
+    def get_date_format_violations(self, schema, table, column_name, date_format_regex, limit=100):
+        try:
+            query = f'''
+                SELECT * FROM "{schema}"."{table}"
+                WHERE  NOT "{column_name}" ~ %s
+            '''
+            self.cursor.execute(query, (date_format_regex,))
+            return self.cursor.fetchall()
+
+        except Exception as e:
+            raise Exception(f"Error counting date format violation count: {str(e)}")
 
 
 class MSSQLConnector(DatabaseConnector):
@@ -1639,61 +1686,105 @@ class MSSQLConnector(DatabaseConnector):
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Error fetching positive value violations: {str(e)}")
-        
 
-        
-    def is_valid_tckn(self, tckn):
-        """Check if a single TCKN value is valid using the same logic as your PostgreSQL function"""
-        if not tckn or not isinstance(tckn, str) or not tckn.isdigit() or len(tckn) != 11:
-            return False
-        
-        if tckn[0] == '0':
-            return False
-        
-        digits = [int(d) for d in tckn]
-        
-        # Validate 10th digit
-        odd_sum = digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
-        even_sum = digits[1] + digits[3] + digits[5] + digits[7]
-        tenth = ((odd_sum * 7) - even_sum) % 10
-        if digits[9] != tenth:
-            return False
-        
-        # Validate 11th digit
-        eleventh = sum(digits[:10]) % 10
-        if digits[10] != eleventh:
-            return False
-        
-        return True
-        
     def get_tckn_violation_count(self, schema, table, column):
-        """Count all invalid TCKN values in the column - MSSQL"""
+        """Count invalid TCKN values (MSSQL)"""
         try:
             query = f'''
-                SELECT COUNT(*) 
-                FROM [{schema}].[{table}]
+                SELECT COUNT(*) FROM [{schema}].[{table}]
                 WHERE [{column}] IS NOT NULL
-                AND dbo.is_valid_tckn([{column}]) = 0
+                  AND NOT (
+                    LEN([{column}]) = 11
+                    AND [{column}] NOT LIKE '0%'
+                    AND [{column}] LIKE '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                    AND (
+                        (
+                            (
+                                CAST(SUBSTRING([{column}],1,1) AS int) +
+                                CAST(SUBSTRING([{column}],3,1) AS int) +
+                                CAST(SUBSTRING([{column}],5,1) AS int) +
+                                CAST(SUBSTRING([{column}],7,1) AS int) +
+                                CAST(SUBSTRING([{column}],9,1) AS int)
+                            ) * 7
+                            -
+                            (
+                                CAST(SUBSTRING([{column}],2,1) AS int) +
+                                CAST(SUBSTRING([{column}],4,1) AS int) +
+                                CAST(SUBSTRING([{column}],6,1) AS int) +
+                                CAST(SUBSTRING([{column}],8,1) AS int)
+                            )
+                        ) % 10
+                    ) = CAST(SUBSTRING([{column}],10,1) AS int)
+                    AND (
+                        (
+                            CAST(SUBSTRING([{column}],1,1) AS int) +
+                            CAST(SUBSTRING([{column}],2,1) AS int) +
+                            CAST(SUBSTRING([{column}],3,1) AS int) +
+                            CAST(SUBSTRING([{column}],4,1) AS int) +
+                            CAST(SUBSTRING([{column}],5,1) AS int) +
+                            CAST(SUBSTRING([{column}],6,1) AS int) +
+                            CAST(SUBSTRING([{column}],7,1) AS int) +
+                            CAST(SUBSTRING([{column}],8,1) AS int) +
+                            CAST(SUBSTRING([{column}],9,1) AS int) +
+                            CAST(SUBSTRING([{column}],10,1) AS int)
+                        ) % 10
+                    ) = CAST(SUBSTRING([{column}],11,1) AS int)
+                  )
             '''
             self.cursor.execute(query)
             return self.cursor.fetchone()[0]
         except Exception as e:
-            raise Exception(f"Error counting TCKN violations: {str(e)}")
+            raise Exception(f"MSSQL TCKN violation count error: {str(e)}")
 
     def get_tckn_violations(self, schema, table, column, limit=100):
-        """Get sample rows with invalid TCKN values - MSSQL"""
+        """Get invalid TCKN rows (MSSQL)"""
         try:
             query = f'''
-                SELECT TOP {limit} * 
-                FROM [{schema}].[{table}]
+                SELECT TOP {limit} * FROM [{schema}].[{table}]
                 WHERE [{column}] IS NOT NULL
-                AND dbo.is_valid_tckn([{column}]) = 0
+                  AND NOT (
+                    LEN([{column}]) = 11
+                    AND [{column}] NOT LIKE '0%'
+                    AND [{column}] LIKE '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                    AND (
+                        (
+                            (
+                                CAST(SUBSTRING([{column}],1,1) AS int) +
+                                CAST(SUBSTRING([{column}],3,1) AS int) +
+                                CAST(SUBSTRING([{column}],5,1) AS int) +
+                                CAST(SUBSTRING([{column}],7,1) AS int) +
+                                CAST(SUBSTRING([{column}],9,1) AS int)
+                            ) * 7
+                            -
+                            (
+                                CAST(SUBSTRING([{column}],2,1) AS int) +
+                                CAST(SUBSTRING([{column}],4,1) AS int) +
+                                CAST(SUBSTRING([{column}],6,1) AS int) +
+                                CAST(SUBSTRING([{column}],8,1) AS int)
+                            )
+                        ) % 10
+                    ) = CAST(SUBSTRING([{column}],10,1) AS int)
+                    AND (
+                        (
+                            CAST(SUBSTRING([{column}],1,1) AS int) +
+                            CAST(SUBSTRING([{column}],2,1) AS int) +
+                            CAST(SUBSTRING([{column}],3,1) AS int) +
+                            CAST(SUBSTRING([{column}],4,1) AS int) +
+                            CAST(SUBSTRING([{column}],5,1) AS int) +
+                            CAST(SUBSTRING([{column}],6,1) AS int) +
+                            CAST(SUBSTRING([{column}],7,1) AS int) +
+                            CAST(SUBSTRING([{column}],8,1) AS int) +
+                            CAST(SUBSTRING([{column}],9,1) AS int) +
+                            CAST(SUBSTRING([{column}],10,1) AS int)
+                        ) % 10
+                    ) = CAST(SUBSTRING([{column}],11,1) AS int)
+                  )
             '''
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except Exception as e:
-            raise Exception(f"Error fetching TCKN violations: {str(e)}")
-        
+            raise Exception(f"MSSQL get TCKN violations error: {str(e)}")
+
     def get_date_logic_violation_count(self, schema, table, start_date_col, end_date_col):
         """MSSQL: Count rows where start_date >= end_date"""
         try:
@@ -2494,61 +2585,105 @@ class MySQLConnector(DatabaseConnector):
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Error fetching positive value violations: {str(e)}")
-        
 
-        
-    def is_valid_tckn(self, tckn):
-        """Check if a single TCKN value is valid using the same logic as your PostgreSQL function"""
-        if not tckn or not isinstance(tckn, str) or not tckn.isdigit() or len(tckn) != 11:
-            return False
-        
-        if tckn[0] == '0':
-            return False
-        
-        digits = [int(d) for d in tckn]
-        
-        # Validate 10th digit
-        odd_sum = digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
-        even_sum = digits[1] + digits[3] + digits[5] + digits[7]
-        tenth = ((odd_sum * 7) - even_sum) % 10
-        if digits[9] != tenth:
-            return False
-        
-        # Validate 11th digit
-        eleventh = sum(digits[:10]) % 10
-        if digits[10] != eleventh:
-            return False
-        
-        return True
-    
     def get_tckn_violation_count(self, schema, table, column):
-        """Count all invalid TCKN values in the column - MySQL"""
+        """Count invalid TCKN values (MySQL)"""
         try:
             query = f'''
-                SELECT COUNT(*) 
-                FROM `{schema}`.`{table}`
+                SELECT COUNT(*) FROM `{schema}`.`{table}`
                 WHERE `{column}` IS NOT NULL
-                AND is_valid_tckn(`{column}`) = FALSE
+                  AND NOT (
+                    CHAR_LENGTH(`{column}`) = 11
+                    AND `{column}` REGEXP '^[0-9]+$'
+                    AND SUBSTRING(`{column}`, 1, 1) <> '0'
+                    AND (
+                        (
+                            (
+                                CAST(SUBSTRING(`{column}`,1,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,3,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,5,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,7,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,9,1) AS UNSIGNED)
+                            ) * 7
+                            -
+                            (
+                                CAST(SUBSTRING(`{column}`,2,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,4,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,6,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,8,1) AS UNSIGNED)
+                            )
+                        ) % 10
+                    ) = CAST(SUBSTRING(`{column}`,10,1) AS UNSIGNED)
+                    AND (
+                        (
+                            CAST(SUBSTRING(`{column}`,1,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,2,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,3,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,4,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,5,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,6,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,7,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,8,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,9,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,10,1) AS UNSIGNED)
+                        ) % 10
+                    ) = CAST(SUBSTRING(`{column}`,11,1) AS UNSIGNED)
+                  )
             '''
             self.cursor.execute(query)
             return self.cursor.fetchone()[0]
         except Exception as e:
-            raise Exception(f"Error counting TCKN violations: {str(e)}")
+            raise Exception(f"MySQL TCKN violation count error: {str(e)}")
 
     def get_tckn_violations(self, schema, table, column, limit=100):
-        """Get sample rows with invalid TCKN values - MySQL"""
+        """Get invalid TCKN rows (MySQL)"""
         try:
             query = f'''
-                SELECT * 
-                FROM `{schema}`.`{table}`
+                SELECT * FROM `{schema}`.`{table}`
                 WHERE `{column}` IS NOT NULL
-                AND is_valid_tckn(`{column}`) = FALSE
+                  AND NOT (
+                    CHAR_LENGTH(`{column}`) = 11
+                    AND `{column}` REGEXP '^[0-9]+$'
+                    AND SUBSTRING(`{column}`, 1, 1) <> '0'
+                    AND (
+                        (
+                            (
+                                CAST(SUBSTRING(`{column}`,1,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,3,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,5,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,7,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,9,1) AS UNSIGNED)
+                            ) * 7
+                            -
+                            (
+                                CAST(SUBSTRING(`{column}`,2,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,4,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,6,1) AS UNSIGNED) +
+                                CAST(SUBSTRING(`{column}`,8,1) AS UNSIGNED)
+                            )
+                        ) % 10
+                    ) = CAST(SUBSTRING(`{column}`,10,1) AS UNSIGNED)
+                    AND (
+                        (
+                            CAST(SUBSTRING(`{column}`,1,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,2,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,3,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,4,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,5,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,6,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,7,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,8,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,9,1) AS UNSIGNED) +
+                            CAST(SUBSTRING(`{column}`,10,1) AS UNSIGNED)
+                        ) % 10
+                    ) = CAST(SUBSTRING(`{column}`,11,1) AS UNSIGNED)
+                  )
                 LIMIT {limit}
             '''
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except Exception as e:
-            raise Exception(f"Error fetching TCKN violations: {str(e)}")
+            raise Exception(f"MySQL get TCKN violations error: {str(e)}")
 
     def get_date_logic_violation_count(self, schema, table, start_date_col, end_date_col):
         """MySQL: Count rows where start_date >= end_date"""
@@ -3435,62 +3570,105 @@ class OracleConnector(DatabaseConnector):
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Error fetching positive value violations: {str(e)}")
-        
-    def is_valid_tckn(self, tckn):
-        """Check if a single TCKN value is valid using the same logic as your PostgreSQL function"""
-        if not tckn or not isinstance(tckn, str) or not tckn.isdigit() or len(tckn) != 11:
-            return False
-        
-        if tckn[0] == '0':
-            return False
-        
-        digits = [int(d) for d in tckn]
-        
-        # Validate 10th digit
-        odd_sum = digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
-        even_sum = digits[1] + digits[3] + digits[5] + digits[7]
-        tenth = ((odd_sum * 7) - even_sum) % 10
-        if digits[9] != tenth:
-            return False
-        
-        # Validate 11th digit
-        eleventh = sum(digits[:10]) % 10
-        if digits[10] != eleventh:
-            return False
-        
-        return True
-    
-    def get_tckn_violation_count(self, schema, table, column):
 
+    def get_tckn_violation_count(self, schema, table, column):
+        """Count invalid TCKN values (Oracle)"""
         try:
             query = f'''
-                SELECT COUNT(*) 
-                FROM {schema}.{table}
-                WHERE {column} IS NOT NULL
-                AND is_valid_tckn({column}) = 0
+                SELECT COUNT(*) FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                  AND NOT (
+                    LENGTH("{column}") = 11
+                    AND REGEXP_LIKE("{column}", '^[0-9]+$')
+                    AND SUBSTR("{column}", 1, 1) <> '0'
+                    AND (
+                        (
+                            (
+                                TO_NUMBER(SUBSTR("{column}",1,1)) +
+                                TO_NUMBER(SUBSTR("{column}",3,1)) +
+                                TO_NUMBER(SUBSTR("{column}",5,1)) +
+                                TO_NUMBER(SUBSTR("{column}",7,1)) +
+                                TO_NUMBER(SUBSTR("{column}",9,1))
+                            ) * 7
+                            -
+                            (
+                                TO_NUMBER(SUBSTR("{column}",2,1)) +
+                                TO_NUMBER(SUBSTR("{column}",4,1)) +
+                                TO_NUMBER(SUBSTR("{column}",6,1)) +
+                                TO_NUMBER(SUBSTR("{column}",8,1))
+                            )
+                        ) MOD 10
+                    ) = TO_NUMBER(SUBSTR("{column}",10,1))
+                    AND (
+                        (
+                            TO_NUMBER(SUBSTR("{column}",1,1)) +
+                            TO_NUMBER(SUBSTR("{column}",2,1)) +
+                            TO_NUMBER(SUBSTR("{column}",3,1)) +
+                            TO_NUMBER(SUBSTR("{column}",4,1)) +
+                            TO_NUMBER(SUBSTR("{column}",5,1)) +
+                            TO_NUMBER(SUBSTR("{column}",6,1)) +
+                            TO_NUMBER(SUBSTR("{column}",7,1)) +
+                            TO_NUMBER(SUBSTR("{column}",8,1)) +
+                            TO_NUMBER(SUBSTR("{column}",9,1)) +
+                            TO_NUMBER(SUBSTR("{column}",10,1))
+                        ) MOD 10
+                    ) = TO_NUMBER(SUBSTR("{column}",11,1))
+                  )
             '''
             self.cursor.execute(query)
             return self.cursor.fetchone()[0]
         except Exception as e:
-            raise Exception(f"Error counting TCKN violations: {str(e)}")
+            raise Exception(f"Oracle TCKN violation count error: {str(e)}")
 
     def get_tckn_violations(self, schema, table, column, limit=100):
-        """Get sample rows with invalid TCKN values - Oracle"""
+        """Get invalid TCKN rows (Oracle)"""
         try:
             query = f'''
-                SELECT * FROM (
-                    SELECT a.*, ROWNUM as rn 
-                    FROM {schema}.{table} a
-                    WHERE {column} IS NOT NULL
-                    AND is_valid_tckn({column}) = 0
-                    AND ROWNUM <= {limit}
-                )
-                WHERE rn <= {limit}
+                SELECT * FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                  AND NOT (
+                    LENGTH("{column}") = 11
+                    AND REGEXP_LIKE("{column}", '^[0-9]+$')
+                    AND SUBSTR("{column}", 1, 1) <> '0'
+                    AND (
+                        (
+                            (
+                                TO_NUMBER(SUBSTR("{column}",1,1)) +
+                                TO_NUMBER(SUBSTR("{column}",3,1)) +
+                                TO_NUMBER(SUBSTR("{column}",5,1)) +
+                                TO_NUMBER(SUBSTR("{column}",7,1)) +
+                                TO_NUMBER(SUBSTR("{column}",9,1))
+                            ) * 7
+                            -
+                            (
+                                TO_NUMBER(SUBSTR("{column}",2,1)) +
+                                TO_NUMBER(SUBSTR("{column}",4,1)) +
+                                TO_NUMBER(SUBSTR("{column}",6,1)) +
+                                TO_NUMBER(SUBSTR("{column}",8,1))
+                            )
+                        ) MOD 10
+                    ) = TO_NUMBER(SUBSTR("{column}",10,1))
+                    AND (
+                        (
+                            TO_NUMBER(SUBSTR("{column}",1,1)) +
+                            TO_NUMBER(SUBSTR("{column}",2,1)) +
+                            TO_NUMBER(SUBSTR("{column}",3,1)) +
+                            TO_NUMBER(SUBSTR("{column}",4,1)) +
+                            TO_NUMBER(SUBSTR("{column}",5,1)) +
+                            TO_NUMBER(SUBSTR("{column}",6,1)) +
+                            TO_NUMBER(SUBSTR("{column}",7,1)) +
+                            TO_NUMBER(SUBSTR("{column}",8,1)) +
+                            TO_NUMBER(SUBSTR("{column}",9,1)) +
+                            TO_NUMBER(SUBSTR("{column}",10,1))
+                        ) MOD 10
+                    ) = TO_NUMBER(SUBSTR("{column}",11,1))
+                  )
+                FETCH FIRST {limit} ROWS ONLY
             '''
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except Exception as e:
-            raise Exception(f"Error fetching TCKN violations: {str(e)}")
+            raise Exception(f"Oracle get TCKN violations error: {str(e)}")
 
     def get_date_logic_violation_count(self, schema, table, start_date_col, end_date_col):
         """Oracle: Count rows where start_date >= end_date"""

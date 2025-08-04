@@ -8,11 +8,15 @@ It allows you to connect to a database, view tables and views, analyze their str
 
 ## 🚀 Features
 
-- 🔗 Connect to PostgreSQL, MySQL, MSSQL, or Oracle
-- 🛠️ Edit or create connection settings through the app interface
-- 📋 List tables and views in selected schema
-- 📈 View summary statistics for all tables
-- 🔎 Detailed analysis of individual tables
+🔗 Multi-DB Support: Connect to PostgreSQL, MySQL, MSSQL, or Oracle
+
+🛠️ Easy Connection Management: Edit or create connection settings in-app
+
+📋 Schema Exploration: List tables and views in your selected schema
+
+📈 Summary Stats: View summary statistics for all tables
+
+🔎 Table Drilldown: Detailed analysis of individual tables
 
 ---
 
@@ -35,7 +39,7 @@ pip install -r requirements.txt
 ```
 ### 4. Run the app
 ```bash
-streamlit run main.py
+streamlit run Home_Page.py
 ```
 
 ⚙️ How-To Use
@@ -67,6 +71,10 @@ Navigate to the Home Page. In the **Database Objects** sidebar, choose between:
 
 - **Summary Statistics:** Get an overview of all tables in the selected schema
 
+- **Detailed Statistics:** Get an detailed analysis of all tables and columns in selected schema
+
+- **Data Quality Checks:** Analyze your data for common data quality issues with a configurable and interactive UI
+
 To analyze a specific table, select it from the dropdown and click **"Analyze".**
 
 ![Run Analysis](images/run_analysis.png)
@@ -81,6 +89,27 @@ In Table Analysis, you can explore two tabs for each column:
 ### 4. View Schema Summary
 In Summary Statistics, get a brief overview of the entire schema, including row counts, null percentages, and other useful metadata.
 
+### 5. View Detailed Statistics
+In Detailed Statistics, get a detailed overview of the entire schema, including row counts, null percentages, PK, FK, References, Index Size, Table Size and other useful metadata.
+
+### 6. 🛡️ Run Data Quality Tests
+
+Easily run comprehensive data quality tests on any table and columns in your connected database:
+
+- Select your target table and columns interactively.
+![Select Table & Columns to Test](images/select_table_and_columns.png)
+
+- Pick from a rich set of validation rules for each selected column: null, distinct, ranges, patterns, email/date formats, Turkish ID check, and more.
+![Select Tests for Column](images/select_tests_for_column.png)
+
+- Configure test parameters (e.g., allowed values, min/max, date ranges) from the UI if needed.
+- Review a full summary table of pass/fail and violation percentages.
+![Violation Summary](images/violation_summary.png)
+
+- Preview up to 100 violating rows per test.
+![Violation Preview](images/violation_preview.png)
+
+NOTE: All checks and configs are non-destructive and do not alter your data.
 
 
 =======
