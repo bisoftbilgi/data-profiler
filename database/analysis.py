@@ -5,7 +5,51 @@ import numpy as np
 from decimal import Decimal
 from database.utils import decimal_to_float
 from datetime import datetime
+import re
 
+TYPE_TO_CATEGORY_PATTERNS = [
+    # --- numerics ---
+    (r'\b(bigint|smallint|tinyint|integer|int2|int4|int8|int)\b', 'numeric'),
+    (r'\b(numeric|number|decimal|dec|fixed)\b', 'numeric'),
+    (r'\b(float|double precision|double|real|float4|float8)\b', 'numeric'),
+
+    # --- text/strings ---
+    (r'\b(varchar2|varchar|nvarchar|nchar varying|character varying|character|char|nchar|text|clob|nclob)\b',
+     'text'),
+
+    # --- dates/times ---
+    (r'\b(date)\b', 'date'),
+    # MySQL DATETIME, SQL Server DATETIME2, Oracle TIMESTAMP, Postgres TIMESTAMP [(with|without) time zone]
+    (r'\b(datetime|datetime2|smalldatetime|timestamp)(\b|\()', 'datetime'),
+    (r'\b(time)\b', 'time'),
+    (r'\b(interval)\b', 'time'),  # treat interval as time-like if you need
+
+    # --- booleans ---
+    (r'\b(boolean|bool|bit)\b', 'boolean'),
+
+    # --- json ---
+    (r'\b(jsonb|json)\b', 'json'),
+
+    # --- binary / other ---
+    (r'\b(varbinary|binary|blob|bytea|raw|long raw)\b', 'binary'),
+]
+
+
+def canonical_category(sql_type: str) -> str:
+    """Return a canonical category for a DB type string."""
+    t = sql_type.strip().lower()
+    # Strip length/precision e.g. varchar(50), number(10,2)
+    t = re.sub(r'\(.*?\)', '', t).strip()
+    for pattern, category in TYPE_TO_CATEGORY_PATTERNS:
+        if re.search(pattern, t):
+            return category
+    # Fallbacks: many engines alias TIMESTAMP to DATETIME semantics
+    if 'timestamp with time zone' in t or 'timestamptz' in t:
+        return 'datetime'
+    if 'timestamp without time zone' in t:
+        return 'datetime'
+    # If truly unknown, be permissive or mark 'other'
+    return 'other'
 
 
 def get_all_tables_and_views(connector, schema):
@@ -162,9 +206,13 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
                             st.metric(metric_name.replace('_', ' ').title(), str(value))
             
             with viz_tab:
+
+
                 # Get column details for visualizations
                 col_details = connector.get_column_details(schema, table, col_name)
-                #st.write(f"DEBUG: col_details for {col_name} (viz_tab) =", col_details)
+                data_type = (col_details.get('data_type') or '').lower()
+                category = canonical_category(data_type)
+                # st.write(f"DEBUG: {col_name} data_type={data_type} -> category={category}")
                 if not col_details:
                     st.warning(f"Could not get details for column {col_name}")
                     continue
@@ -172,8 +220,10 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
                 # Add visualizations based on data type
                 data_type = col_details['data_type'].lower()
                 #st.write(f"DEBUG: data_type for {col_name} (viz_tab) = {data_type}")
-                
-                if data_type in ['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'double', 'number', 'real']:
+                category = canonical_category(data_type)
+
+                # st.write(f"DEBUG: {col_name} data_type={data_type} -> category={category}")
+                if category == 'numeric':
                     # Get value distribution for numeric columns
                     value_counts = connector.get_value_counts(schema, table, col_name)
                     #st.write(f"DEBUG: value_counts for {col_name} (viz_tab) =", value_counts[:10] if value_counts else "EMPTY")
@@ -222,7 +272,7 @@ def analyze_table(connector, schema: str, table: str, object_type: str = 'TABLE'
                                     title=f"Box Plot for {col_name}")
                         #st.write(f"DEBUG: Box Plot for {col_name} (viz_tab) created.")
                         st.plotly_chart(fig)
-                elif data_type in ['varchar', 'char', 'text', 'longtext', 'mediumtext', 'tinytext', 'nvarchar', 'nchar', 'varchar2', 'ntext', 'character varying']:
+                elif category == 'text':
                     # Get value counts for text columns
                     value_counts = connector.get_value_counts(schema, table, col_name)
                     #st.write(f"DEBUG: value_counts for {col_name} (viz_tab) =", value_counts[:10] if value_counts else "EMPTY")

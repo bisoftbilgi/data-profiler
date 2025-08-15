@@ -413,7 +413,7 @@ class PostgresConnector(DatabaseConnector):
         try:
             self.cursor.execute(f'''
                 SELECT COUNT(*) FROM "{schema}"."{table}"
-                WHERE "{column}" ~ '[A-Za-z]'
+                WHERE CAST("{column}" AS TEXT) ~ '[A-Za-z]'
             ''')
             return self.cursor.fetchone()[0]
         except Exception as e:
@@ -459,7 +459,7 @@ class PostgresConnector(DatabaseConnector):
         try:
             query = f'''
                 SELECT * FROM "{schema}"."{table}"
-                WHERE REGEXP_LIKE("{column}", '[A-Za-z]')
+                WHERE REGEXP_LIKE(CAST("{column}" AS TEXT), '[A-Za-z]')
                 FETCH FIRST {limit} ROWS ONLY
             '''
             self.cursor.execute(query)
@@ -469,10 +469,13 @@ class PostgresConnector(DatabaseConnector):
 
     def get_number_count(self, schema, table, column):
         try:
-            self.cursor.execute(f'''
+            query = f'''
                 SELECT COUNT(*) FROM "{schema}"."{table}"
-                WHERE "{column}" ~ '[0-9]'
-            ''')
+                WHERE CAST("{column}" AS TEXT) ~ '[0-9]'
+            '''
+            print(f"[DEBUG] Running query:\n{query}")  # print first
+            self.cursor.execute(query)
+
             return self.cursor.fetchone()[0]
         except Exception as e:
             raise Exception(f"Error checking for numbers: {str(e)}")
@@ -482,7 +485,7 @@ class PostgresConnector(DatabaseConnector):
             formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
             total_query = f'''
                 SELECT COUNT(*) FROM "{schema}"."{table}"
-                WHERE "{column}" IS NOT NULL AND "{column}"
+                WHERE "{column}" IS NOT NULL
             '''
             violation_query = f'''
                 SELECT COUNT(*) FROM "{schema}"."{table}"
@@ -532,7 +535,7 @@ class PostgresConnector(DatabaseConnector):
         try:
             query = f'''
                 SELECT * FROM "{schema}"."{table}"
-                WHERE REGEXP_LIKE("{column}", '[0-9]')
+                WHERE REGEXP_LIKE(CAST("{column}" AS TEXT), '[0-9]')
                 LIMIT {limit}
             '''
             self.cursor.execute(query)

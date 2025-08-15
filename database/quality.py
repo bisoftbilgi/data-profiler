@@ -4,6 +4,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 from database.utils import load_db_config, check_connection
 from collections import Counter
+import re
 
 PASS_ICON = "\u2705"  # ✅
 FAIL_ICON = "\u274C"  # ❌
@@ -19,6 +20,49 @@ def get_cached_columns(_connector, schema, table):
 @st.cache_data(show_spinner=False)
 def get_all_cached_tables_and_views(_connector, schema):
     return _connector.get_all_tables_and_views(schema)
+
+
+TYPE_TO_CATEGORY_PATTERNS = [
+    # --- numerics ---
+    (r'\b(bigint|smallint|tinyint|integer|int2|int4|int8|int)\b', 'numeric'),
+    (r'\b(numeric|number|decimal|dec|fixed)\b', 'numeric'),
+    (r'\b(float|double precision|double|real|float4|float8)\b', 'numeric'),
+
+    # --- text/strings ---
+    (r'\b(varchar2|varchar|nvarchar|nchar varying|character varying|character|char|nchar|text|clob|nclob)\b', 'text'),
+
+    # --- dates/times ---
+    (r'\b(date)\b', 'date'),
+    # MySQL DATETIME, SQL Server DATETIME2, Oracle TIMESTAMP, Postgres TIMESTAMP [(with|without) time zone]
+    (r'\b(datetime|datetime2|smalldatetime|timestamp)(\b|\()', 'datetime'),
+    (r'\b(time)\b', 'time'),
+    (r'\b(interval)\b', 'time'),  # treat interval as time-like if you need
+
+    # --- booleans ---
+    (r'\b(boolean|bool|bit)\b', 'boolean'),
+
+    # --- json ---
+    (r'\b(jsonb|json)\b', 'json'),
+
+    # --- binary / other ---
+    (r'\b(varbinary|binary|blob|bytea|raw|long raw)\b', 'binary'),
+]
+
+def canonical_category(sql_type: str) -> str:
+    """Return a canonical category for a DB type string."""
+    t = sql_type.strip().lower()
+    # Strip length/precision e.g. varchar(50), number(10,2)
+    t = re.sub(r'\(.*?\)', '', t).strip()
+    for pattern, category in TYPE_TO_CATEGORY_PATTERNS:
+        if re.search(pattern, t):
+            return category
+    # Fallbacks: many engines alias TIMESTAMP to DATETIME semantics
+    if 'timestamp with time zone' in t or 'timestamptz' in t:
+        return 'datetime'
+    if 'timestamp without time zone' in t:
+        return 'datetime'
+    # If truly unknown, be permissive or mark 'other'
+    return 'other'
 
 def get_column_params(custom_test_params, col_name, param_name, default=None):
     """Safely get column-specific parameters"""
@@ -43,8 +87,13 @@ def date_format_to_regex(format_str):
 
 
 def get_available_tests(column_info):
-    data_type = column_info[1].lower()
-    return {
+    """
+    column_info: e.g. ('orders.created_at', 'TIMESTAMP WITHOUT TIME ZONE')
+                  tuple/list where [1] is the DB's type string
+    """
+    category = canonical_category(column_info[1])
+
+    tests = {
         'null_check': {
             'name': 'Column Values to be Not Null',
             'description': 'Check for null values, test passes if no NULL values are found.',
@@ -57,102 +106,114 @@ def get_available_tests(column_info):
         },
         'range_check': {
             'name': 'Min-Max Range Check',
-            'description': 'Checks if numeric column values are within user-defined min and max limit. Passes if all values are in range.',
-            'available_for': ['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'double', 'real', 'number','double precision']
+            'description': 'Checks if numeric column values are within user-defined min and max.',
+            'available_for': ['numeric']
         },
         'length_check': {
             'name': 'String Length Check',
-            'description': 'Checks if all string lengths in the column are within user-defined min and max limits. Passes if all values fit the length range.',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
+            'description': 'Checks if all string lengths are within user-defined min and max limits.',
+            'available_for': ['text']
         },
-    
         'letter_check': {
             'name': 'Letter Not to be Present',
-            'description': 'Checks that no alphabetic characters (A–Z, a–z) appear in the column. Passes if no letters are found.',
+            'description': 'Checks that no alphabetic characters (A–Z, a–z) appear in the column.',
             'available_for': 'all'
         },
-        'number_check': {   
+        'number_check': {
             'name': 'Number Not to be Present',
             'description': 'Checks if the column contains any numeric characters (0-9). Fails if any digits are found.',
             'available_for': 'all'
         },
         'allowed_values': {
             'name': 'Value must be in allowed list',
-            'description': 'Verifies that all column values are within a user-defined list of allowed values. Passes if no disallowed values are found.',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
+            'description': 'Verifies that all values are within a user-defined allowed list.',
+            'available_for': ['text', 'numeric', 'boolean']  # often useful for enums/flags too
         },
         'eng_numeric_format': {
             'name': 'ENG Numeric Format',
             'description': 'Check if numeric values use dot (.) as decimal separator',
-            'available_for': ['decimal', 'numeric', 'float', 'double', 'real', 'number','double precision']
+            'available_for': ['numeric', 'text']  # allow on text if numbers are stored as text
         },
         'tr_numeric_format': {
             'name': 'TR Numeric Format',
             'description': 'Check if numeric values use comma (,) as decimal separator',
-            'available_for': ['decimal', 'numeric', 'float', 'double', 'real', 'number','double precision']
+            'available_for': ['numeric', 'text']
         },
         'case_consistency': {
             'name': 'Case Consistency Check',
             'description': 'Check if all strings follow same casing (upper/lower)',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
+            'available_for': ['text']
         },
         'future_date': {
             'name': 'Future Date Check',
             'description': 'Ensure dates are not in the future',
-            'available_for': ['date', 'datetime', 'timestamp', 'timestamp(6)']
+            'available_for': ['date', 'datetime']
         },
         'date_range': {
             'name': 'Date Range Check',
-            'description': 'Checks whether all date values in a column fall within a specified start–enddate range. If all values are within the range, the test passes.',
-            'available_for': ['date', 'datetime', 'timestamp', 'timestamp(6)', 'timestamp(6)(11)']
+            'description': 'Verify all values fall within a start–end date range.',
+            'available_for': ['date', 'datetime']
         },
         'no_special_chars': {
             'name': 'No Special Characters',
             'description': "Ensure values don't contain unwanted symbols",
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
+            'available_for': ['text']
         },
         'email_format': {
             'name': 'Email Format Check',
-            'description': 'Checks whether values in a column follow valid email format. If all non-null values match the email regex, the test passes.',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
+            'description': 'Checks whether values follow valid email format.',
+            'available_for': ['text']
         },
         'regex_pattern': {
             'name': 'Regex Pattern Match',
             'description': 'Validates column values against a user-provided regex.',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
+            'available_for': ['text']
         },
-            'positive_value': {
+        'positive_value': {
             'name': 'Positive Value Check',
-            'description': 'Checks whether all non-null values in the column are positive.'
-                           '- If `strict=True`, only values > 0 are accepted.'
-                           '- If `strict=False`, values >= 0 are accepted.',
-            'available_for': ['decimal', 'numeric', 'float', 'double', 'int', 'bigint', 'smallint', 'tinyint', 'real', 'number', 'double precision']
+            'description': (
+                'Checks whether all non-null values are positive.\n'
+                '- If `strict=True`, only values > 0 are accepted.\n'
+                '- If `strict=False`, values >= 0 are accepted.'
+            ),
+            'available_for': ['numeric']
         },
         'tckn_check': {
             'name': 'TCKN Check',
-            'description': 'Checks for invalid Turkish Identification Numbers (TCKN) in a column.',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2', 'character varying']
+            'description': 'Checks for invalid Turkish Identification Numbers (TCKN).',
+            'available_for': ['text']
         },
         'date_check': {
-            'name': 'Date Format Distibution Check',
-            'description': 'Validates date formats in a text column by parsing each value.'
-                           '- Counts invalid date entries; passes if none found.'
-                           '- Stores invalid rows for review.'
-                           '- Displays distribution of detected date formats.',
-            'available_for': ['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
+            'name': 'Date Format Distribution Check',
+            'description': (
+                'Parses text values as dates, counts invalid entries, and shows format distribution.'
+            ),
+            'available_for': ['text']
         },
         'date_logic_check': {
             'name': 'Date Logic Check',
-            'description': 'Check if Start Date is before than End Date',
-            'available_for': ['date', 'datetime', 'timestamp', 'timestamp(6)', 'timestamp(6)(11)']
-                },
-
-        'date_format_check':{
+            'description': 'Check if Start Date is before End Date',
+            'available_for': ['date', 'datetime']
+        },
+        'date_format_check': {
             'name': 'Date Format Check',
-            'description':'Check if input date format is compatible with column values',
-            'available_for':['varchar', 'char', 'nvarchar', 'nchar', 'text','varchar2','character varying']
-        }
-    }
+            'description': 'Check if input date format is compatible with column values',
+            'available_for': ['text']
+        }}
+
+    def is_applicable(test_def):
+        allowed = test_def.get('available_for', 'all')
+        if allowed == 'all':
+            return True
+        return category in allowed
+
+        # filter tests by category and also include resolved category
+
+    applicable = {k: v for k, v in tests.items() if is_applicable(v)}
+    applicable['_resolved_category'] = category
+    return applicable
+
+
 
 def create_schema_for_column(column_info, selected_tests, custom_test_params=None):
     return None
@@ -223,10 +284,11 @@ def run_quality_tests(connector, schema: str, table: str, column_test_map, custo
             distinct_count = None
 
         try:
-            if 'range_check' in tests_for_column and data_type in ['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'double', 'real','number']:
+            if 'range_check' in tests_for_column:
                 range_stats = connector.get_min_max_range(schema, table, col_name)
                 user_min = get_column_params(custom_test_params, col_name, 'range_check_min')
                 user_max = get_column_params(custom_test_params, col_name, 'range_check_max')
+                print(user_min, user_max)
                 range_pass = None
                 if user_min is not None and user_max is not None and range_stats is not None:
                     passed = user_min <= range_stats.get("min", 0) and range_stats.get("max", 0) <= user_max
@@ -281,8 +343,11 @@ def run_quality_tests(connector, schema: str, table: str, column_test_map, custo
 
         try:
             if 'number_check' in tests_for_column:
+                print("tamam")
                 number_count = connector.get_number_count(schema, table, col_name)
+                print(number_count)
                 number_pass = None
+                st.write(number_count)
                 if number_count == 0:
                     number_pass = PASS_ICON
                 else:
@@ -302,6 +367,7 @@ def run_quality_tests(connector, schema: str, table: str, column_test_map, custo
                 allowed_values_pass = None
                 if allowed_values_str:
                     allowed_values_list = [val.strip() for val in allowed_values_str.split(',')]
+                    print(allowed_values_list)
                     result = connector.get_allowed_values_violation_count(schema, table, col_name, allowed_values_list)
                     allowed_values_violation_count = result['violation']
                     allowed_values_non_violation_count = result['non_violation']
@@ -604,6 +670,7 @@ def run_quality_tests(connector, schema: str, table: str, column_test_map, custo
             'Allowed Values Violation Count': allowed_values_violation_count,
             'Allowed Values Non Violation Count': allowed_values_non_violation_count,
             'Allowed Values Pass': allowed_values_pass,
+            'Allowed Values Violation %': (allowed_values_violation_count/total_rows*100)  if total_rows and allowed_values_violation_count is not None else None,
             'ENG Numeric Format Violation Count': eng_numeric_format_violation_count,
             'ENG Numeric Format Pass': eng_numeric_format_pass,
             'TR Numeric Format Violation Count': tr_numeric_format_violation_count,
@@ -795,30 +862,32 @@ def show_quality_tests_page(connector, schema: str):
             st.markdown(f"### 🧪 Tests for Column: `{col_name}`")
 
             selected_col_info = next((col for col in columns if col[0] == col_name), None)
-            data_type = selected_col_info[1].lower() if selected_col_info else ''
 
-            # Get applicable tests for the column
-            available_tests = {
-                key: val for key, val in get_available_tests(selected_col_info).items()
-                if val['available_for'] == 'all' or data_type in val['available_for']
-            }
+            # This already returns only applicable tests for the column's category
+            available_tests = get_available_tests(selected_col_info)
+
+            # (Optional) pull out the resolved category for display/debugging
+            resolved_category = available_tests.pop('_resolved_category', None)
+            # Build a name->key map for a readable multiselect
+            name_to_key = {v['name']: k for k, v in available_tests.items()}
+            selected_names = st.multiselect(
+                "Select tests",
+                options=list(name_to_key.keys()),
+                key=f"{col_name}__tests"
+            )
+            selected_tests = [name_to_key[n] for n in selected_names]
 
             if not available_tests:
                 st.warning(f"No applicable tests found for column `{col_name}`.")
                 continue
 
-            # Show descriptions
             with st.expander("Show Test Descriptions", expanded=False):
                 for key, val in available_tests.items():
                     st.markdown(f"- **{val['name']}**: {val['description']}")
 
-            # Show checkboxes to select tests
-            selected_tests = []
-            for key, val in available_tests.items():
-                if st.checkbox(val['name'], key=f"{col_name}_{key}_checkbox"):
-                    selected_tests.append(key)
-
             column_test_map[col_name] = selected_tests
+
+
 
             if selected_tests:  # Only show if tests are selected for this column
 

@@ -14,13 +14,26 @@ It allows you to connect to a database, view tables and views, analyze their str
 
 📋 Schema Exploration: List tables and views in your selected schema
 
+🔎 Table Drilldown: Detailed analysis of individual tables
+
 📈 Summary Stats: View summary statistics for all tables
 
-🔎 Table Drilldown: Detailed analysis of individual tables
+📈 Detailed Schema Stats: View details statistics for all tables/columns and export as Excel file.
+
+📈 Data Quality Tests: VDefine validation rules and visualize pass/fail metrics
+
+
+
 
 ---
 
 ## 🏁 Getting Started
+
+### Prerequisites
+
+- Python 3.8+
+- Streamlit
+- Relevant database drivers (e.g., `psycopg2-binary`, `pymysql`, `pyodbc`, `cx_Oracle`)
 
 ### 1. Clone the repository
 
@@ -61,7 +74,7 @@ schema = public
 
 ![Configure Profile](images/configure_profile.png)
 
-Fill in your database details and click the **"Save and Continue"** button to proceed.
+Fill in your database details and click the **"Test"** button, then **"Save and Continue"** button to proceed.
 ![Save Connection](images/save_connection.png)
 
 ### 2. Explore the Database
@@ -75,24 +88,30 @@ Navigate to the Home Page. In the **Database Objects** sidebar, choose between:
 
 - **Data Quality Checks:** Analyze your data for common data quality issues with a configurable and interactive UI
 
+![Analysis Options](images/analysis_options.png)
+
 To analyze a specific table, select it from the dropdown and click **"Analyze".**
 
 ![Run Analysis](images/run_analysis.png)
 
-### 3. View Table Insights
+### 3. View Table Analysis
 In Table Analysis, you can explore two tabs for each column:
 
 - 📊 **Statistics:** Displays metrics like total rows, unique ratio, min, max, mean, median, etc.
 
-- 📈 **Data Distribution:** Visualizes the column's histogram and value composition
+![Table Analysis](images/table_analysis_1.png)
 
-### 4. View Schema Summary
+- 📈 **Data Distribution:** Visualizes the column's histogram and value composition
+![Data Distribution](images/table_analysis_2.png)
+![Data Distribution](images/table_analysis_3.png)
+
+### 4. View Summary Statistics
 In Summary Statistics, get a brief overview of the entire schema, including row counts, null percentages, and other useful metadata.
 
 ### 5. View Detailed Statistics
 In Detailed Statistics, get a detailed overview of the entire schema, including row counts, null percentages, PK, FK, References, Index Size, Table Size and other useful metadata.
 
-### 6. 🛡️ Run Data Quality Tests
+### 6. Run Data Quality Tests
 
 Easily run comprehensive data quality tests on any table and columns in your connected database:
 
@@ -109,10 +128,3 @@ Easily run comprehensive data quality tests on any table and columns in your con
 - Preview up to 100 violating rows per test.
 ![Violation Preview](images/violation_preview.png)
 
-NOTE: All checks and configs are non-destructive and do not alter your data.
-
-
-=======
-# data-profiler
-Data Profiler
->>>>>>> 65282dd888f4c58eaad69c58b9fc40d4cdfa53b9
