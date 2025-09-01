@@ -191,8 +191,8 @@ def get_available_tests(column_info):
             'available_for': ['text']
         },
         'date_logic_check': {
-            'name': 'Date Logic Check',
-            'description': 'Check if Start Date is before End Date',
+            'name': 'Date Interval Check',
+            'description': 'Check if Date column values is previous than other Date column',
             'available_for': ['date', 'datetime']
         },
         'date_format_check': {
@@ -606,7 +606,7 @@ def run_quality_tests(connector, schema: str, table: str, column_test_map, custo
                     print(f"[DEBUG] Date check pass: {date_logic_check_pass}")
                 else:
                     
-                    violated_rows_by_column[(col_name, 'date_check')] = connector.get_date_logic_violations(
+                    violated_rows_by_column[(col_name, 'date_logic_check')] = connector.get_date_logic_violations(
                         schema, table, start_date_logic, end_date_logic
                     )
                     date_logic_check_pass = FAIL_ICON
@@ -636,12 +636,12 @@ def run_quality_tests(connector, schema: str, table: str, column_test_map, custo
                         schema, table, col_name,  date_format_regex
                     )
                     date_format_pass = FAIL_ICON
-                    print(f"[DEBUG] Date format pass: {date_logic_check_pass}")
+                    print(f"[DEBUG] Date format pass: {date_format_pass}")
                     
         except Exception as e:
             date_format_violation_count = None
             date_format_pass = f"{FAIL_ICON} ({str(e)})"
-            st.write(f"[DEBUG] throwing exception Date format pass: {date_logic_check_pass}")
+            st.write(f"[DEBUG] throwing exception Date format pass: {date_format_pass}")
 
         metrics.append({
             'Column': col_name,
@@ -785,7 +785,7 @@ def run_quality_tests(connector, schema: str, table: str, column_test_map, custo
         st.dataframe(field_df)
 
     if violated_rows_by_column:
-        st.subheader("Violated Rows Preview")
+        st.subheader("Violated Rows Preview - 10 Rows Only")
 
         for (col_name, test_name), rows in violated_rows_by_column.items():
             if rows:
@@ -844,11 +844,13 @@ def show_quality_tests_page(connector, schema: str):
             st.info("No sample data returned.")
     except Exception as e:
         st.error(f"Error retrieving sample data: {str(e)}")
+    all_columns = [col[0] for col in columns]
+    all_column = st.button("Select all columns", [col[0] for col in columns])
     selected_columns = st.multiselect("Choose columns:", [col[0] for col in columns], default=[col[0] for col in columns])
 
-    all_tests = ['null_check', 'distinct_check', 'range_check', 'length_check', 'datetime_check', 
-             'letter_check', 'number_check', 'allowed_values', 'eng_numeric_format', 'tr_numeric_format', 
-             'case_consistency', 'future_date', 'date_range', 'no_special_chars', 'email_format', 
+    all_tests = ['null_check', 'distinct_check', 'range_check', 'length_check', 'datetime_check',
+             'letter_check', 'number_check', 'allowed_values', 'eng_numeric_format', 'tr_numeric_format',
+             'case_consistency', 'future_date', 'date_range', 'no_special_chars', 'email_format',
              'regex_pattern', 'positive_value', 'tckn_check', 'date_check', 'date_logic_check', 'date_format_check']
 
     column_test_map = {}  # Dict to store selected tests per column

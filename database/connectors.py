@@ -1439,7 +1439,7 @@ class MSSQLConnector(DatabaseConnector):
             formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
             total_query = f'''
                 SELECT COUNT(*) FROM [{schema}].[{table}]
-                WHERE [{column}] IS NOT NULL AND [{column}]
+                WHERE [{column}] IS NOT NULL]
             '''
             violation_query = f'''
                 SELECT COUNT(*) FROM [{schema}].[{table}]
@@ -1818,7 +1818,7 @@ class MSSQLConnector(DatabaseConnector):
         except Exception as e:
             raise Exception(f"MSSQL error fetching date logic violations: {str(e)}")
         
-    def get_text_column_date_formats_mssql(self, schema, table, column_name, limit=1000):
+    def get_text_column_date_formats(self, schema, table, column_name, limit=1000):
         try:
             query = f"""
                 SELECT TOP {limit} *, 
@@ -1860,30 +1860,90 @@ class MSSQLConnector(DatabaseConnector):
         except Exception as e:
             raise Exception(f"MSSQL error fetching date formats: {str(e)}")
 
-        
+    def get_date_format_violation_count(self, schema, table, column_name, date_format_regex, limit=100):
+        """
+        Requires a CLR function: dbo.RegexIsMatch(input, pattern) returning 1/0.
+        """
+        query = f"""
+            SELECT COUNT(*) FROM [{schema}].[{table}]
+            WHERE dbo.RegexIsMatch([{column_name}], ?) = 0
+            OFFSET 0 ROWS FETCH NEXT {int(limit)} ROWS ONLY
+        """
+        self.cursor.execute(query, (date_format_regex,))
+
+        print("DEBUG SQL preview:")
+        print(query.replace("?", f"'{date_format_regex}'"))
+
+        return self.cursor.fetchone()[0]
 
 
+    def get_date_format_violations(self, schema, table, column_name, date_format_regex, limit=100):
+        """
+        Requires a CLR function: dbo.RegexIsMatch(input, pattern) returning 1/0.
+        """
+        query = f"""
+            SELECT * FROM [{schema}].[{table}]
+            WHERE dbo.RegexIsMatch([{column_name}], ?) = 0
+            OFFSET 0 ROWS FETCH NEXT {int(limit)} ROWS ONLY
+        """
+        self.cursor.execute(query, (date_format_regex,))
 
+        print("DEBUG SQL preview:")
+        print(query.replace("?", f"'{date_format_regex}'"))
+
+        # Return rows as list of dicts
+        rows = self.cursor.fetchall()
+        cols = [d[0] for d in self.cursor.description]
+        return [dict(zip(cols, r)) for r in rows]
 
 
 class MySQLConnector(DatabaseConnector):
     """MySQL database connector implementation"""
-    
+
     def connect(self, config: dict) -> None:
-        """Connect to MySQL database"""
+        """Connect to MySQL with fallback to pure-Python to reveal real errors."""
+        import traceback
+        import mysql.connector as mysql_connector
+
+        def _build_kwargs(use_pure=None):
+            kwargs = {
+                "host": config.get("host", "localhost"),
+                "port": int(config.get("port", 3306) or 3306),
+                "user": config.get("user"),
+                "password": config.get("password"),
+                "database": config.get("dbname"),
+                "connection_timeout": int(config.get("connection_timeout", 10)),
+                "raise_on_warnings": True,
+            }
+            if use_pure is not None:
+                kwargs["use_pure"] = use_pure
+            return {k: v for k, v in kwargs.items() if v is not None}
+
         try:
-            import mysql.connector
-            self.connection = mysql.connector.connect(
-                host=config.get('host', 'localhost'),
-                port=config.get('port', 3306),
-                user=config.get('user'),
-                password=config.get('password'),
-                database=config.get('dbname')
-            )
-            self.cursor = self.connection.cursor()
+            # Try fast C extension first
+            self.connection = mysql_connector.connect(**_build_kwargs(use_pure=False))
+            self.connection.ping(reconnect=True, attempts=1, delay=0)
+            self.cursor = self.connection.cursor(buffered=True, dictionary=False)
+            return
+        except RuntimeError as e:
+            if "Failed raising error" not in str(e):
+                raise
+            # Retry with pure Python to expose the true error
+            try:
+                self.connection = mysql_connector.connect(**_build_kwargs(use_pure=True))
+                self.connection.ping(reconnect=True, attempts=1, delay=0)
+                self.cursor = self.connection.cursor(buffered=True, dictionary=False)
+                return
+            except Exception as inner:
+                tb = "".join(traceback.format_exception(type(inner), inner, inner.__traceback__))
+                raise Exception(
+                    "Error connecting to MySQL (pure-Python path): "
+                    f"type={type(inner).__name__} msg={inner} traceback=\n{tb}"
+                ) from inner
         except Exception as e:
-            raise Exception(f"Error connecting to MySQL: {str(e)}")
-    
+            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            raise Exception(f"Error connecting to MySQL: {type(e).__name__}: {e}\n{tb}") from e
+
     def close(self) -> None:
         """Close MySQL connection safely"""
         try:
@@ -2328,7 +2388,7 @@ class MySQLConnector(DatabaseConnector):
             formatted_values = ', '.join(f"'{val}'" for val in allowed_values)
             total_query = f'''
                 SELECT COUNT(*) FROM `{schema}`.`{table}`
-                WHERE `{column}` IS NOT NULL AND `{column}`
+                WHERE `{column}` IS NOT NULL
             '''
             violation_query = f'''
                 SELECT COUNT(*) FROM `{schema}`.`{table}`
@@ -2719,7 +2779,7 @@ class MySQLConnector(DatabaseConnector):
         except Exception as e:
             raise Exception(f"MySQL error fetching date logic violations: {str(e)}")
         
-    def get_text_column_date_formats_mysql(self, schema, table, column_name, limit=1000):
+    def get_text_column_date_formats(self, schema, table, column_name, limit=1000):
         try:
             query = f"""
                 SELECT *, 
@@ -2762,8 +2822,43 @@ class MySQLConnector(DatabaseConnector):
         except Exception as e:
             raise Exception(f"MySQL error fetching date formats: {str(e)}")
 
+    def get_date_format_violation_count(self, schema, table, column_name, date_format_regex, limit=100):
+        """
+        Requires MySQL 8.0+ (REGEXP_LIKE). For MySQL 5.7, see the fallback below.
+        """
+        query = f"""
+            SELECT COUNT(*) FROM `{schema}`.`{table}`
+            WHERE NOT REGEXP_LIKE(`{column_name}`, %s)
+            LIMIT {int(limit)}
+        """
+        self.cursor.execute(query, (date_format_regex,))
 
-    
+        print("DEBUG SQL preview:")
+        print(query.replace("%s", f"'{date_format_regex}'"))
+
+        return self.cursor.fetchone()[0]
+
+    def get_date_format_violations(self, schema, table, column_name, date_format_regex, limit=100):
+        """
+        Requires MySQL 8.0+ (REGEXP_LIKE). For MySQL 5.7, see the fallback below.
+        """
+        query = f"""
+            SELECT * FROM `{schema}`.`{table}`
+            WHERE NOT REGEXP_LIKE(`{column_name}`, %s)
+            LIMIT {int(limit)}
+        """
+        self.cursor.execute(query, (date_format_regex,))
+
+        print("DEBUG SQL preview:")
+        print(query.replace("%s", f"'{date_format_regex}'"))
+
+        # Return rows as list of dicts
+        rows = self.cursor.fetchall()
+        cols = [d[0] for d in self.cursor.description]
+        return [dict(zip(cols, r)) for r in rows]
+
+
+
 
 import logging
 
@@ -3703,50 +3798,105 @@ class OracleConnector(DatabaseConnector):
             return self.cursor.fetchall()
         except Exception as e:
             raise Exception(f"Oracle error fetching date logic violations: {str(e)}")
-        
-    def get_text_column_date_formats_oracle(self, schema, table, column_name, limit=1000):
+
+    def get_text_column_date_formats(self, schema, table, column_name, limit=1000):
+        # Ensure identifier quoting
+        qcol = f'"{column_name}"'
+        query = f"""
+            SELECT
+                t.*,
+
+                CASE
+                    WHEN REGEXP_LIKE({qcol}, '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$') THEN 'DD.MM.YYYY'
+                    WHEN REGEXP_LIKE({qcol}, '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$') THEN 'YYYY-MM-DD'
+                    WHEN REGEXP_LIKE({qcol}, '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$') THEN 'MM/DD/YYYY'
+                    WHEN REGEXP_LIKE({qcol}, '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$') THEN 'DD/MM/YYYY'
+                    WHEN REGEXP_LIKE({qcol}, '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$') THEN 'YYYY.MM.DD'
+                    ELSE 'Unknown'
+                END AS "format",
+
+                CASE
+                    WHEN REGEXP_LIKE({qcol}, '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$')
+                         AND TO_DATE({qcol}, 'DD.MM.YYYY') IS NOT NULL THEN 1
+                    WHEN REGEXP_LIKE({qcol}, '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$')
+                         AND TO_DATE({qcol}, 'YYYY-MM-DD') IS NOT NULL THEN 1
+                    WHEN REGEXP_LIKE({qcol}, '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$')
+                         AND TO_DATE({qcol}, 'MM/DD/YYYY') IS NOT NULL THEN 1
+                    WHEN REGEXP_LIKE({qcol}, '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$')
+                         AND TO_DATE({qcol}, 'DD/MM/YYYY') IS NOT NULL THEN 1
+                    WHEN REGEXP_LIKE({qcol}, '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$')
+                         AND TO_DATE({qcol}, 'YYYY.MM.DD') IS NOT NULL THEN 1
+                    ELSE 0
+                END AS "is_valid",
+
+                COALESCE(
+                    CASE WHEN REGEXP_LIKE({qcol}, '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$')
+                         THEN TO_DATE({qcol}, 'DD.MM.YYYY') END,
+                    CASE WHEN REGEXP_LIKE({qcol}, '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$')
+                         THEN TO_DATE({qcol}, 'YYYY-MM-DD') END,
+                    CASE WHEN REGEXP_LIKE({qcol}, '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$')
+                         THEN TO_DATE({qcol}, 'MM/DD/YYYY') END,
+                    CASE WHEN REGEXP_LIKE({qcol}, '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$')
+                         THEN TO_DATE({qcol}, 'DD/MM/YYYY') END,
+                    CASE WHEN REGEXP_LIKE({qcol}, '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$')
+                         THEN TO_DATE({qcol}, 'YYYY.MM.DD') END
+                ) AS "parsed_date"
+
+            FROM "{schema}"."{table}" t
+            WHERE {qcol} IS NOT NULL
+            FETCH FIRST {int(limit)} ROWS ONLY
+        """
+
         try:
-            query = f"""
-                SELECT *,
-
-                    CASE
-                        WHEN REGEXP_LIKE({column_name}, '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$') THEN 'DD.MM.YYYY'
-                        WHEN REGEXP_LIKE({column_name}, '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$') THEN 'YYYY-MM-DD'
-                        WHEN REGEXP_LIKE({column_name}, '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$') THEN 'MM/DD/YYYY'
-                        WHEN REGEXP_LIKE({column_name}, '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$') THEN 'DD/MM/YYYY'
-                        WHEN REGEXP_LIKE({column_name}, '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$') THEN 'YYYY.MM.DD'
-                        ELSE 'Unknown'
-                    END AS format,
-
-                    CASE
-                        WHEN TO_DATE({column_name}, 'DD.MM.YYYY') IS NOT NULL THEN 1
-                        WHEN TO_DATE({column_name}, 'YYYY-MM-DD') IS NOT NULL THEN 1
-                        WHEN TO_DATE({column_name}, 'MM/DD/YYYY') IS NOT NULL THEN 1
-                        WHEN TO_DATE({column_name}, 'DD/MM/YYYY') IS NOT NULL THEN 1
-                        WHEN TO_DATE({column_name}, 'YYYY.MM.DD') IS NOT NULL THEN 1
-                        ELSE 0
-                    END AS is_valid,
-
-                    COALESCE(
-                        CASE WHEN REGEXP_LIKE({column_name}, '^[0-3][0-9]\\.[0-1][0-9]\\.[1-2][0-9]{{3}}$') THEN TO_DATE({column_name}, 'DD.MM.YYYY') END,
-                        CASE WHEN REGEXP_LIKE({column_name}, '^[1-2][0-9]{{3}}-[0-1][0-9]-[0-3][0-9]$') THEN TO_DATE({column_name}, 'YYYY-MM-DD') END,
-                        CASE WHEN REGEXP_LIKE({column_name}, '^[0-1][0-9]/[0-3][0-9]/[1-2][0-9]{{3}}$') THEN TO_DATE({column_name}, 'MM/DD/YYYY') END,
-                        CASE WHEN REGEXP_LIKE({column_name}, '^[0-3][0-9]/[0-1][0-9]/[1-2][0-9]{{3}}$') THEN TO_DATE({column_name}, 'DD/MM/YYYY') END,
-                        CASE WHEN REGEXP_LIKE({column_name}, '^[1-2][0-9]{{3}}\\.[0-1][0-9]\\.[0-3][0-9]$') THEN TO_DATE({column_name}, 'YYYY.MM.DD') END
-                    ) AS parsed_date
-
-                FROM "{schema}"."{table}"
-                WHERE {column_name} IS NOT NULL
-                AND ROWNUM <= {limit}
-            """
             self.cursor.execute(query)
             columns = [desc[0] for desc in self.cursor.description]
             rows = self.cursor.fetchall()
             return [dict(zip(columns, row)) for row in rows]
-
         except Exception as e:
-            raise Exception(f"Oracle error fetching date formats: {str(e)}")
+            raise Exception(f"Oracle error fetching date formats: {e}")
 
+    def get_date_format_violation_count(self, schema, table, column_name, date_format_regex, limit=100):
+        """
+        Uses Oracle REGEXP_LIKE. Bind style is :1.
+        """
+        query = f'''
+            SELECT COUNT(*) FROM "{schema}"."{table}"
+            WHERE NOT REGEXP_LIKE("{column_name}", :1)
+            FETCH FIRST {int(limit)} ROWS ONLY
+        '''
+        self.cursor.execute(query, (date_format_regex,))
+
+        print("DEBUG SQL preview:")
+        print(query.replace(":1", f"'{date_format_regex}'"))
+
+        return self.cursor.fetchone()[0]
+
+
+
+
+
+    def get_date_format_violations(self, schema, table, column_name, date_format_regex, limit=100):
+        """
+        Return the violating rows (as list[dict]) so callers can build a DataFrame.
+        """
+        qcol = f'"{column_name}"'
+        query = f'''
+            SELECT * 
+            FROM "{schema}"."{table}"
+            WHERE NOT REGEXP_LIKE({qcol}, :1)
+            FETCH FIRST {int(limit)} ROWS ONLY
+        '''
+        # Execute
+        self.cursor.execute(query, (date_format_regex,))
+
+        # Debug preview
+        print("DEBUG SQL preview:")
+        print(query.replace(":1", f"'{date_format_regex}'"))
+
+        # Return rows as list of dicts
+        rows = self.cursor.fetchall()
+        cols = [d[0] for d in self.cursor.description]
+        return [dict(zip(cols, r)) for r in rows]
 
 
 
